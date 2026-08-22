@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-22
+
 ### Fixed
 - `release.ts` committed the version bump and then tagged it, with no rollback
   if tagging failed. A failed `git tag` left a Release commit that nothing
