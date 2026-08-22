@@ -11,6 +11,12 @@
     --accent: #2f6f4f;  --accent-soft: #eaf3ee;
     --warn: #a4472c;    --warn-soft: #fbeee9;
     --star: #c8891a;
+    /* Resume is a lighter green than --accent (L 0.174 vs 0.125) so the primary
+       Add-session button stays the loudest thing on the page. Copy ID is a soft
+       peach with dark ink: light orange cannot carry white text at AA. */
+    --on-accent: #ffffff;
+    --resume: #41805e;  --on-resume: #ffffff;
+    --copy:   #e8c49b;  --on-copy:   #1b1a17;
     --radius: 6px;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   }
@@ -21,6 +27,10 @@
       --accent: #6bbd90; --accent-soft: #1c2b23;
       --warn: #e08b6d;  --warn-soft: #2d1f1a;
       --star: #e0aa47;
+      /* Dark-mode --accent is a light green; white text on it is 2.26:1. */
+      --on-accent: #16161a;
+      --resume: #5fb489;  --on-resume: #16161a;
+      --copy:   #bf8a52;  --on-copy:   #16161a;
     }
   }
   * { box-sizing: border-box; }
@@ -51,7 +61,7 @@
     border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 13px;
   }
   button:hover { border-color: var(--dim); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 550; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 550; }
   button.primary:hover { filter: brightness(1.08); }
   button.ghost { border-color: transparent; background: none; color: var(--dim); padding: 4px 7px; }
   button.ghost:hover { color: var(--ink); background: var(--bg); }
@@ -119,6 +129,19 @@
     font: inherit; font-size: 12px; color: var(--ink); background: var(--panel);
     border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px;
   }
+  /* Resume and Copy ID stack vertically; the column sizes to the wider of the two. */
+  .stack { display: flex; flex-direction: column; gap: 4px; }
+  .stack button { width: 100%; padding: 5px 11px; font-size: 13px; font-weight: 550; }
+
+  button.resume { background: var(--resume); border-color: var(--resume); color: var(--on-resume); }
+  button.resume:hover:not(:disabled) { filter: brightness(1.1); }
+  button.resume:disabled {
+    background: none; border-color: var(--line); color: var(--faint);
+    cursor: not-allowed; filter: none; font-weight: 400;
+  }
+  button.copyid { background: var(--copy); border-color: var(--copy); color: var(--on-copy); }
+  button.copyid:hover { filter: brightness(1.04); }
+
   .star { font-size: 15px; line-height: 1; padding: 4px 6px; }
   .star[data-on="true"] { color: var(--star); }
   .star[data-on="false"] { color: var(--line); }
@@ -292,7 +315,10 @@ function rowHtml(row) {
           ${PRIORITIES.map((p) => `<option ${p === row.priority ? "selected" : ""}>${p}</option>`).join("")}
         </select>
       </label>
-      <button data-act="resume" data-id="${row.id}" ${row.alive ? "" : "disabled title='session is not on disk'"}>Resume</button>
+      <div class="stack">
+        <button class="resume" data-act="resume" data-id="${row.id}" ${row.alive ? "" : "disabled title='session is not on disk'"}>Resume</button>
+        <button class="copyid" data-act="copyid" data-id="${row.id}" title="Copy the full session id">Copy ID</button>
+      </div>
       <button class="ghost" data-act="delete" data-id="${row.id}" title="Remove from working set">&times;</button>
     </div>
   </div>`;
@@ -323,7 +349,10 @@ function render() {
             </div>
             <div class="actions">
               ${r.tracked ? "" : `<button data-act="track" data-id="${r.id}">Track</button>`}
-              <button data-act="resume" data-id="${r.id}">Resume</button>
+              <div class="stack">
+                <button class="resume" data-act="resume" data-id="${r.id}">Resume</button>
+                <button class="copyid" data-act="copyid" data-id="${r.id}">Copy ID</button>
+              </div>
             </div>
           </div>`).join("")
     ) + `</div>`;
@@ -411,6 +440,10 @@ document.addEventListener("click", async (e) => {
     await api(`/api/rows/${id}`, { method: "DELETE" });
     rows = rows.filter((r) => r.id !== id);
     return render();
+  }
+  if (act === "copyid") {
+    const ok = await copy(id);
+    return toast(ok ? `Copied ${id.slice(0, 8)}\u2026` : id);
   }
   if (act === "resume") {
     const res = await api(`/api/resume/${id}`, { method: "POST" });

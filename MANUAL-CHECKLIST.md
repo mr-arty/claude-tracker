@@ -53,6 +53,11 @@ bun run server.ts # http://127.0.0.1:4000
 
 ## Resume
 
+- [ ] **Copy ID.** Click *Copy ID* on any row. Toast confirms, and pasting gives
+      the full 36-character session id, not the truncated one shown in the row.
+- [ ] **Buttons read as distinct.** Resume is green and clearly lighter than the
+      *Add session* button; Copy ID is a soft orange. Both legible in light and
+      dark mode, and Copy ID stays enabled on a dead row where Resume does not.
 - [ ] **Live row opens a terminal.** Click *Resume* on any row that is not dead.
       A terminal window opens running that session. Toast says "Terminal opened".
 - [ ] **Dead row cannot be resumed.** The *Resume* button on the `cafe0019` row
