@@ -349,9 +349,24 @@ describe("errors and edges", () => {
     expect((await handler()(GET("/api/nope"))).status).toBe(404);
   });
 
-  test("config reports that JIRA_BASE still needs setting", async () => {
-    const cfg = await (await handler()(GET("/api/config"))).json();
+  // These inject jiraBase rather than reading CT_JIRA_BASE, so the result does
+  // not depend on whether the developer running them has it set in their shell.
+  test("config reports unconfigured while the placeholder is in place", async () => {
+    const h = createHandler({ root, annotationsPath, spawn: spy, jiraBase: "https://CHANGEME.atlassian.net/browse" });
+    const cfg = await (await h(GET("/api/config"))).json();
     expect(cfg.jiraConfigured).toBe(false);
     expect(cfg.jiraBase).toContain("CHANGEME");
+  });
+
+  test("config reports configured once a real host is supplied", async () => {
+    const h = createHandler({ root, annotationsPath, spawn: spy, jiraBase: "https://example.atlassian.net/browse" });
+    const cfg = await (await h(GET("/api/config"))).json();
+    expect(cfg.jiraConfigured).toBe(true);
+    expect(cfg.jiraBase).toBe("https://example.atlassian.net/browse");
+  });
+
+  test("config always reports a version", async () => {
+    const cfg = await (await handler()(GET("/api/config"))).json();
+    expect(cfg.version).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

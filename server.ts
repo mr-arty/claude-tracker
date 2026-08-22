@@ -34,7 +34,8 @@ import { currentVersion } from "./version.ts";
  *
  *   CT_JIRA_BASE=https://your-host.atlassian.net/browse bun run server.ts
  */
-const JIRA_BASE = Bun.env.CT_JIRA_BASE ?? "https://CHANGEME.atlassian.net/browse";
+const JIRA_PLACEHOLDER = "https://CHANGEME.atlassian.net/browse";
+const JIRA_BASE = Bun.env.CT_JIRA_BASE ?? JIRA_PLACEHOLDER;
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 4000;
@@ -54,6 +55,12 @@ export interface Deps {
   root?: string;
   annotationsPath?: string;
   spawn?: SpawnFn;
+  /**
+   * Jira browse URL. Injectable so tests never inherit CT_JIRA_BASE from the
+   * developer's shell: a test that asserts on ambient environment state passes
+   * or fails depending on who runs it, which is worse than no test.
+   */
+  jiraBase?: string;
 }
 
 /**
@@ -163,6 +170,7 @@ export function createHandler(deps: Deps = {}) {
   const root = deps.root ?? projectsRoot();
   const annotationsPath = deps.annotationsPath ?? storePath();
   const spawn = deps.spawn ?? realSpawn;
+  const jiraBase = deps.jiraBase ?? JIRA_BASE;
   const index = new TicketIndex();
 
   /** Scan disk and refresh the index. Every request that needs session data starts here. */
@@ -198,8 +206,8 @@ export function createHandler(deps: Deps = {}) {
       if (method === "GET" && pathname === "/api/config") {
         return json({
           version: await currentVersion(),
-          jiraBase: JIRA_BASE,
-          jiraConfigured: !JIRA_BASE.includes("CHANGEME"),
+          jiraBase,
+          jiraConfigured: jiraBase !== JIRA_PLACEHOLDER,
         });
       }
 
@@ -339,7 +347,7 @@ if (import.meta.main) {
   const port = Number(Bun.env.PORT ?? DEFAULT_PORT);
   const server = start(port);
   console.log(`claude-tracker ${await currentVersion()}  http://${HOST}:${server.port}`);
-  if (JIRA_BASE.includes("CHANGEME")) {
+  if (JIRA_BASE === JIRA_PLACEHOLDER) {
     console.log(`  note: set CT_JIRA_BASE=https://your-host.atlassian.net/browse to make ticket links work`);
   }
 }
