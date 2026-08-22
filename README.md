@@ -18,7 +18,8 @@ Set `JIRA_BASE` at the top of `server.ts` once to make ticket links work.
   priority, a name, and tags.
 - Resume opens a terminal running that session, falling back to the clipboard.
 - Search covers every session on disk, not just the tracked ones, so deleting a
-  row loses no history.
+  row loses no history. It matches session ids, titles, and ticket keys; a
+  session that owns a ticket ranks above one that merely mentioned it.
 
 ## Layout
 
@@ -35,5 +36,5 @@ Set `JIRA_BASE` at the top of `server.ts` once to make ticket links work.
 State lives in `~/.claude-tracker/annotations.json` and is safe to hand-edit.
 
 ```bash
-bun test    # 104 tests, no dependencies
+bun test    # 94 tests, no dependencies
 ```

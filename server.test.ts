@@ -265,6 +265,53 @@ describe("GET /api/search", () => {
     expect(results.map((r: { id: string }) => r.id)).toEqual([A]);
   });
 
+  test("finds a session by its id prefix", async () => {
+    const { results } = await (await handler()(GET(`/api/search?q=${A.slice(0, 8)}`))).json();
+    expect(results.map((r: { id: string }) => r.id)).toEqual([A]);
+    expect(results[0].kind).toBe("id");
+  });
+
+  test("finds a session by its full id, hyphens and all", async () => {
+    const { results } = await (await handler()(GET(`/api/search?q=${A}`))).json();
+    expect(results.map((r: { id: string }) => r.id)).toEqual([A]);
+  });
+
+  test("finds a session by words in its name", async () => {
+    const { results } = await (await handler()(GET("/api/search?q=fetch and pull"))).json();
+    expect(results.map((r: { id: string }) => r.id)).toEqual([B]);
+    expect(results[0].kind).toBe("name");
+  });
+
+  test("name matching is case-insensitive and substring-based", async () => {
+    const { results } = await (await handler()(GET("/api/search?q=BRANCH"))).json();
+    expect(results.map((r: { id: string }) => r.id)).toEqual([B]);
+  });
+
+  test("an owned ticket outranks a session that merely mentions it", async () => {
+    // A owns PROJ-405 via aiTitle. Give B a passing mention of the same key.
+    const proj = join(root, "-home-dev-work-example-service");
+    await Bun.sleep(10);
+    await writeFile(join(proj, `${B}.jsonl`), jsonl(
+      { type: "user", cwd: "/home/dev/work/example-service", message: { content: "git fetch and pull main up to date" } },
+      { aiTitle: "Fetch and pull main branch updates" },
+      { type: "assistant", message: { content: `while here I also glanced at ${key(405)}` } },
+    ));
+    const { results } = await (await handler()(GET(`/api/search?q=${key(405)}`))).json();
+    expect(results.map((r: { id: string; kind: string }) => [r.id, r.kind])).toEqual([
+      [A, "ticket"],
+      [B, "mention"],
+    ]);
+  });
+
+  test("results carry the name and owned ticket so the UI need not refetch", async () => {
+    const { results } = await (await handler()(GET(`/api/search?q=${A.slice(0, 8)}`))).json();
+    expect(results[0]).toMatchObject({
+      name: `Implement ${key(405)} Jira ticket`,
+      ticket: key(405),
+      projectName: "example-service",
+    });
+  });
+
   test("an empty query returns nothing rather than everything", async () => {
     expect((await (await handler()(GET("/api/search?q="))).json()).results).toEqual([]);
   });

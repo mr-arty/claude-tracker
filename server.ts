@@ -4,7 +4,7 @@
  *   GET    /                     index.html
  *   GET    /api/rows             tracked rows, joined with on-disk metadata
  *   GET    /api/untracked        sessions not tracked, ticket and name resolved
- *   GET    /api/search?q=        every session mentioning a ticket, from the index
+ *   GET    /api/search?q=        session id, ticket, name or mention, from the index
  *   PUT    /api/rows/:id         merge one row
  *   DELETE /api/rows/:id         hard delete the row, never the transcript
  *   POST   /api/resume/:id       spawn a terminal, or fall back to the clipboard
@@ -46,54 +46,103 @@ export interface Deps {
   root?: string;
   annotationsPath?: string;
   spawn?: SpawnFn;
-  indexDir?: string;
 }
 
 /**
- * Ticket -> sessions, held in memory.
+ * How a session matched the query. Ranked best-first: typing an id means you
+ * want that session, and a session's own ticket beats one it merely discussed.
  *
- * Rebuilding costs 195ms over the whole 130MB corpus and yields about 9KB, so a
- * query becomes a map lookup instead of a 192ms rescan. Invalidation reuses the
- * mtimes the scan already collected: no extra stat calls, and a file that
- * changed is the only one re-read.
+ * The mention tier exists because any transcript that DISCUSSES a ticket gets it
+ * indexed. A session about the tracker itself can end up carrying a dozen keys it
+ * never worked on, so those must never outrank a real match.
+ */
+export type MatchKind = "id" | "ticket" | "name" | "mention";
+const RANK: Record<MatchKind, number> = { id: 0, ticket: 1, name: 2, mention: 3 };
+
+export interface Hit {
+  id: string;
+  kind: MatchKind;
+}
+
+interface Entry {
+  mtime: number;
+  /** The ticket this session is actually about, or null. */
+  owned: string | null;
+  /** Which rule produced `owned`. Kept for debugging a surprising suggestion. */
+  source: "aiTitle" | "opener" | null;
+  /** aiTitle, or a trimmed first message. */
+  name: string | null;
+  /** Every ticket appearing anywhere in the transcript, including ones only discussed. */
+  mentions: Set<string>;
+}
+
+/**
+ * Searchable state for every session, held in memory.
+ *
+ * A full rebuild costs about 195ms over a 130MB corpus and yields roughly 9KB, so
+ * a query is a map walk rather than a 192ms rescan. Invalidation reuses the mtimes
+ * the directory scan already collected: no extra stat calls, and only a transcript
+ * that changed is re-read.
  */
 class TicketIndex {
-  private tickets = new Map<string, Set<string>>(); // session id -> tickets
-  private mtimes = new Map<string, number>();
+  private entries = new Map<string, Entry>();
 
   async refresh(sessions: SessionMeta[]): Promise<void> {
     const live = new Set(sessions.map((s) => s.id));
-    for (const id of this.mtimes.keys()) {
-      if (!live.has(id)) {
-        this.mtimes.delete(id);
-        this.tickets.delete(id);
-      }
-    }
+    for (const id of this.entries.keys()) if (!live.has(id)) this.entries.delete(id);
+
     for (const s of sessions) {
-      if (this.mtimes.get(s.id) === s.lastActive) continue;
-      this.tickets.set(s.id, await extractAllTickets(s.path));
-      this.mtimes.set(s.id, s.lastActive);
+      if (this.entries.get(s.id)?.mtime === s.lastActive) continue;
+      const { ticket, name, source } = await extractSession(s.path);
+      this.entries.set(s.id, {
+        mtime: s.lastActive,
+        owned: ticket,
+        source,
+        name,
+        mentions: await extractAllTickets(s.path),
+      });
     }
   }
 
-  /** Session ids mentioning `query`, case-insensitive, prefix-matching on the ticket key. */
-  find(query: string): Set<string> {
-    const q = query.trim().toUpperCase();
-    const hits = new Set<string>();
-    if (!q) return hits;
-    for (const [id, set] of this.tickets) {
-      for (const t of set) {
-        if (t.toUpperCase().startsWith(q)) {
-          hits.add(id);
-          break;
+  /**
+   * Matches session ids, owned tickets, names, and mentioned tickets, in that
+   * order of confidence. Case-insensitive; ids and tickets match by prefix,
+   * names by substring.
+   */
+  find(query: string): Hit[] {
+    const q = query.trim();
+    if (!q) return [];
+    const upper = q.toUpperCase();
+    const lower = q.toLowerCase();
+    const hits: Hit[] = [];
+
+    for (const [id, e] of this.entries) {
+      let kind: MatchKind | null = null;
+      if (id.toLowerCase().startsWith(lower) || id.toLowerCase().replace(/-/g, "").startsWith(lower.replace(/-/g, ""))) {
+        kind = "id";
+      } else if (e.owned?.toUpperCase().startsWith(upper)) {
+        kind = "ticket";
+      } else if (e.name?.toLowerCase().includes(lower)) {
+        kind = "name";
+      } else {
+        for (const t of e.mentions) {
+          if (t.toUpperCase().startsWith(upper)) {
+            kind = "mention";
+            break;
+          }
         }
       }
+      if (kind) hits.push({ id, kind });
     }
-    return hits;
+    return hits.sort((a, b) => RANK[a.kind] - RANK[b.kind]);
+  }
+
+  entry(id: string): Entry | undefined {
+    return this.entries.get(id);
   }
 
   ticketsFor(id: string): string[] {
-    return [...(this.tickets.get(id) ?? [])].sort();
+    return [...(this.entries.get(id)?.mentions ?? [])].sort();
   }
 }
 
@@ -157,22 +206,21 @@ export function createHandler(deps: Deps = {}) {
       // already resolved. One request, no per-row follow-ups.
       if (method === "GET" && pathname === "/api/untracked") {
         const [store, sessions] = await Promise.all([read(annotationsPath), snapshot()]);
-        const candidates = sessions.filter((s) => !(s.id in store));
-        const out = [];
-        for (const s of candidates) {
-          const { ticket, name, source } = await extractSession(s.path);
-          out.push({
+        // Ticket and name come from the index, which the snapshot above just
+        // refreshed. No second read of the same transcripts.
+        const out = sessions
+          .filter((s) => !(s.id in store))
+          .map((s) => ({
             id: s.id,
             project: s.project,
             projectName: s.projectName,
             lastActive: s.lastActive,
             size: s.size,
-            suggestedTicket: ticket,
-            suggestedName: name,
-            suggestionSource: source,
+            suggestedTicket: index.entry(s.id)?.owned ?? null,
+            suggestedName: index.entry(s.id)?.name ?? null,
+            suggestionSource: index.entry(s.id)?.source ?? null,
             mentions: index.ticketsFor(s.id).slice(0, 8),
-          });
-        }
+          }));
         return json({ sessions: out });
       }
 
@@ -181,21 +229,30 @@ export function createHandler(deps: Deps = {}) {
       if (method === "GET" && pathname === "/api/search") {
         const q = url.searchParams.get("q") ?? "";
         const [store, sessions] = await Promise.all([read(annotationsPath), snapshot()]);
-        const hits = index.find(q);
         const byId = new Map(sessions.map((s) => [s.id, s]));
-        const results = [...hits]
-          .map((id) => {
+        const upper = q.trim().toUpperCase();
+        // Ranked by match kind first, then newest within each kind, so an id or
+        // an owned ticket never sits below a passing mention.
+        const results = index
+          .find(q)
+          .map(({ id, kind }) => {
             const s = byId.get(id)!;
+            const e = index.entry(id);
             return {
               id,
+              kind,
+              name: e?.name ?? null,
+              ticket: e?.owned ?? null,
               project: s.project,
               projectName: s.projectName,
               lastActive: s.lastActive,
               tracked: id in store,
-              tickets: index.ticketsFor(id).filter((t) => t.toUpperCase().startsWith(q.trim().toUpperCase())),
+              tickets: upper
+                ? index.ticketsFor(id).filter((t) => t.toUpperCase().startsWith(upper))
+                : [],
             };
           })
-          .sort((a, b) => b.lastActive - a.lastActive);
+          .sort((a, b) => (RANK[a.kind] - RANK[b.kind]) || (b.lastActive - a.lastActive));
         return json({ query: q, results });
       }
 

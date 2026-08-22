@@ -133,6 +133,14 @@
   .pill { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
   .pill.none { background: none; color: var(--faint); border-color: var(--line); }
 
+  .kind {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650;
+    padding: 1px 6px; border-radius: 3px; font-family: var(--mono);
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .kind[data-kind=mention] { background: none; color: var(--faint); border-color: var(--line); }
+
   .empty { text-align: center; padding: 40px 20px; color: var(--dim); border: 1px dashed var(--line); border-radius: var(--radius); }
   .empty strong { display: block; color: var(--ink); font-weight: 560; margin-bottom: 5px; }
   .empty code { font-family: var(--mono); font-size: 12px; }
@@ -182,6 +190,9 @@
 <script>
 const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"];
 const ROLLUP = { none: "□", partial: "◑", all: "✓" };
+// How a search result matched. "mentioned" means the session merely discussed
+// the ticket, so it is ranked last and labelled to say so.
+const MATCH_LABEL = { id: "session id", ticket: "ticket", name: "title", mention: "mentioned" };
 const $ = (sel) => document.querySelector(sel);
 
 let rows = [];
@@ -276,12 +287,15 @@ function render() {
     const { query, results } = searching;
     main.innerHTML = `<div class="group"><h2>Search &mdash; ${esc(query)}</h2>` + (
       results.length === 0
-        ? `<div class="empty"><strong>No session mentions ${esc(query)}</strong>Search covers every transcript on disk, tracked or not.</div>`
+        ? `<div class="empty"><strong>Nothing matches ${esc(query)}</strong>Searches session ids, titles, and ticket keys across every transcript on disk — tracked or not.</div>`
         : results.map((r) => `<div class="row">
             <div class="rollup" data-state="none">&middot;</div>
             <div>
-              <div class="name" style="border:0">${r.tickets.map((t) => `<span class="chip">${esc(t)}</span>`).join(" ")}</div>
+              <div class="name" style="border:0">${esc(r.name ?? "(untitled)")}</div>
               <div class="meta">
+                <span class="kind" data-kind="${r.kind}">${MATCH_LABEL[r.kind] ?? r.kind}</span>
+                ${r.ticket ? `<span class="chip">${esc(r.ticket)}</span>` : ""}
+                ${r.kind === "mention" && r.tickets.length ? `<span class="sid">mentions ${r.tickets.map(esc).join(", ")}</span>` : ""}
                 <span class="sid">${esc(r.id.slice(0, 8))}</span>
                 <span class="proj">${esc(r.projectName ?? "")}</span>
                 <span>${ago(r.lastActive)}</span>

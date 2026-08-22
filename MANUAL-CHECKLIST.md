@@ -1,6 +1,6 @@
 # Manual UI checklist
 
-The server has 104 automated tests. The UI does not — that was a deliberate
+The server has 94 automated tests. The UI does not — that was a deliberate
 call: it is ~500 lines you exercise daily, and a browser harness would be more
 machinery than the thing it tests. This is the repeatable pass instead.
 
@@ -78,6 +78,13 @@ bun run server.ts # http://127.0.0.1:4000
 
 ## Search
 
+- [ ] **Finds a session by its id.** Paste the first 8 characters of any session
+      id. That session comes back, labelled `SESSION ID`.
+- [ ] **Finds a session by its title.** Type a word from a session's name. It
+      matches, labelled `TITLE`.
+- [ ] **Owned tickets outrank mentions.** Search a ticket that one session worked
+      on and others merely discussed. The owner is first, labelled `TICKET`; the
+      rest follow, labelled `MENTIONED` and greyed.
 - [ ] **Finds untracked sessions.** With an empty working set, search `PROJ-558`.
       Results appear. This is the whole point: search reads disk, not the table.
 - [ ] **Finds deleted ones.** Track a session, note its ticket, delete the row,
