@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Real session ids and ticket keys. Never commit.
+fixtures.local.json

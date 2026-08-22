@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy to fixtures.local.json and fill in with your own sessions. That file is gitignored so real ticket keys never enter git. Generate a starting point with: bun run fixtures.ts",
+
+  "_mustMatch": "Session id prefix -> the ticket the extractor must return. Pick sessions where you know the answer, ideally a mix: some where the ticket is in the aiTitle, at least one where it is only in your opening message.",
+  "mustMatch": {
+    "cafe0001": "PROJ-101",
+    "cafe0002": "PROJ-102"
+  },
+
+  "_mustNotMatch": "Session id prefix -> why it must return null. The important half. Pick chore and incident sessions whose bytes mention a ticket somewhere but which are not about that ticket. These catch an implementation that regexes raw JSONL and picks up the stale slug field.",
+  "mustNotMatch": {
+    "cafe0003": "git chore; a stale slug field names a ticket the session never worked on"
+  }
+}
