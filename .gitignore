@@ -4,3 +4,7 @@ node_modules/
 
 # Real session ids and ticket keys. Never commit.
 fixtures.local.json
+
+# Tooling scratch, created by gstack. Currently empty, but anything it writes
+# here is local state, not source.
+.gstack/
