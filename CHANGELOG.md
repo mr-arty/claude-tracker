@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-22
+
 ### Added
 - Search matches session ids and session titles, not only ticket keys. Results
   are ranked id, then owned ticket, then title, then mention, and each row says
