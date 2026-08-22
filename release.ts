@@ -10,6 +10,11 @@
  * Refuses to run on a dirty working tree, on failing tests, with an empty
  * Unreleased section, or when the tag already exists. Every one of those means
  * the release would record something untrue.
+ *
+ * The commit and the tag are applied as one unit. An earlier version committed
+ * first and tagged second, so a failing `git tag` (GPG prompt, for one) left a
+ * Release commit with nothing pointing at it: VERSION and CHANGELOG claimed a
+ * release that did not exist. Now a tag failure rolls the commit back.
  */
 
 import { parse, format, bump, isBumpPart, BUMP_PARTS, VERSION_FILE, type BumpPart } from "./version.ts";
@@ -92,9 +97,28 @@ if (DRY) {
 await Bun.write(VERSION_FILE, `${format(next)}\n`);
 await Bun.write(CHANGELOG, rewritten);
 
+// Signing is a common failure here: commit.gpgsign and tag.gpgSign are separate
+// settings, so a repo can be configured for unsigned commits and still try to
+// sign the tag, then block on a passphrase prompt no script can answer.
+const before = await run(["git", "rev-parse", "HEAD"]);
+
 await run(["git", "add", "VERSION", "CHANGELOG.md"]);
 await run(["git", "commit", "-m", `Release ${format(next)}\n\n${notes}`]);
-await run(["git", "tag", "-a", tag, "-m", `Release ${format(next)}\n\n${notes}`]);
+
+const tagProc = Bun.spawn(["git", "tag", "-a", tag, "-m", `Release ${format(next)}\n\n${notes}`], {
+  stdout: "pipe",
+  stderr: "pipe",
+});
+if ((await tagProc.exited) !== 0) {
+  const err = (await new Response(tagProc.stderr).text()).trim();
+  // Undo the commit so the tree does not claim a release that has no tag.
+  await run(["git", "reset", "--hard", before]);
+  const signing = /gpg|sign|pinentry/i.test(err)
+    ? "\n  looks like tag signing: try  git config tag.gpgSign false\n  (it is separate from commit.gpgsign)"
+    : "";
+  die(`could not create tag ${tag} — rolled the release commit back`, err + signing);
+}
 
 console.log(`\n  committed and tagged ${tag}`);
-console.log(`  undo:  git tag -d ${tag} && git reset --hard HEAD~1`);
+console.log(`  push:  git push --follow-tags`);
+console.log(`  undo:  git tag -d ${tag} && git reset --hard ${before.slice(0, 8)}`);
