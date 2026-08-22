@@ -10,6 +10,15 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+### Fixed
+- `release.ts` committed the version bump and then tagged it, with no rollback
+  if tagging failed. A failed `git tag` left a Release commit that nothing
+  pointed at, so VERSION and CHANGELOG claimed a release that did not exist.
+  The commit and the tag are now applied as one unit: a tag failure resets back
+  to the pre-release commit. A signing failure additionally names `tag.gpgSign`,
+  which is a separate setting from `commit.gpgsign`, so a repo configured for
+  unsigned commits will still try to sign its tags.
+
 ## [0.2.0] - 2026-08-22
 
 ### Added
