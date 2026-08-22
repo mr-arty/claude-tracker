@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, test, beforeAll } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { extractFromText, extractSession, isTicketKey, TICKET_PREFIXES } from "./extract.ts";
 import { scanSessions, type SessionMeta } from "./scan.ts";
 
@@ -25,17 +26,29 @@ interface Fixtures {
   mustNotMatch: Record<string, string>;
 }
 
-let fixtures: Fixtures | null = null;
+// Resolved synchronously at module load so describe.skipIf can see it. An async
+// check in beforeAll runs after registration, and the parity block would then
+// report as passing when it had in fact done nothing.
+const FIXTURE_PATH = new URL("./fixtures.local.json", import.meta.url).pathname;
+const HAS_FIXTURES = existsSync(FIXTURE_PATH);
+
+let fixtures: Fixtures = { mustMatch: {}, mustNotMatch: {} };
 let sessions: SessionMeta[] = [];
 const find = (prefix: string) => sessions.find((s) => s.id.startsWith(prefix));
 
+if (!HAS_FIXTURES) {
+  console.warn(
+    "\n  fixtures.local.json missing — real-corpus parity tests SKIPPED." +
+      "\n  Copy fixtures.example.json or run `bun run fixtures.ts` to enable them." +
+      "\n  Without it, an aiTitle format change in Claude Code will NOT be caught.\n",
+  );
+}
+
 beforeAll(async () => {
-  const file = Bun.file(new URL("./fixtures.local.json", import.meta.url).pathname);
-  if (await file.exists()) {
-    const raw = (await file.json()) as Partial<Fixtures>;
-    fixtures = { mustMatch: raw.mustMatch ?? {}, mustNotMatch: raw.mustNotMatch ?? {} };
-    sessions = await scanSessions();
-  }
+  if (!HAS_FIXTURES) return;
+  const raw = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Partial<Fixtures>;
+  fixtures = { mustMatch: raw.mustMatch ?? {}, mustNotMatch: raw.mustNotMatch ?? {} };
+  sessions = await scanSessions();
 });
 
 /** Keys are built from the configured prefix so these tests pass for any project. */
@@ -144,20 +157,8 @@ describe("extractFromText", () => {
   });
 });
 
-describe("parity against real transcripts", () => {
-  test("fixtures.local.json is present, otherwise this whole block is skipped", () => {
-    if (!fixtures) {
-      console.warn(
-        "\n  fixtures.local.json missing — real-corpus parity tests skipped." +
-          "\n  Copy fixtures.example.json or run `bun run fixtures.ts` to enable them." +
-          "\n  Without it, an aiTitle format change in Claude Code will NOT be caught.\n",
-      );
-    }
-    expect(true).toBe(true);
-  });
-
+describe.skipIf(!HAS_FIXTURES)("parity against real transcripts", () => {
   test("the corpus is present, otherwise every assertion below is vacuous", () => {
-    if (!fixtures) return;
     expect(sessions.length).toBeGreaterThan(0);
     const present = Object.keys(fixtures.mustMatch).filter(find).length;
     const total = Object.keys(fixtures.mustMatch).length;
@@ -166,7 +167,6 @@ describe("parity against real transcripts", () => {
   });
 
   test("every fixture session resolves to its expected ticket", async () => {
-    if (!fixtures) return;
     const wrong: string[] = [];
     for (const [prefix, expected] of Object.entries(fixtures.mustMatch)) {
       const session = find(prefix);
@@ -179,7 +179,6 @@ describe("parity against real transcripts", () => {
   });
 
   test("chore sessions return no ticket, even though their bytes mention one", async () => {
-    if (!fixtures) return;
     const leaked: string[] = [];
     for (const [prefix, why] of Object.entries(fixtures.mustNotMatch)) {
       const session = find(prefix);
@@ -191,7 +190,6 @@ describe("parity against real transcripts", () => {
   });
 
   test("every session yields either a ticket or a usable name", async () => {
-    if (!fixtures) return;
     let nameless = 0;
     for (const s of sessions) {
       const { ticket, name } = await extractSession(s.path);
