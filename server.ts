@@ -23,6 +23,7 @@
 import { scanSessions, projectsRoot, type SessionMeta } from "./scan.ts";
 import { extractSession, extractAllTickets } from "./extract.ts";
 import { read, upsert, remove, rollup, storePath, CorruptStoreError, type Annotation } from "./annotations.ts";
+import { currentVersion } from "./version.ts";
 
 /** Set this once. Everything else in the app works without it. */
 const JIRA_BASE = "https://CHANGEME.atlassian.net/browse";
@@ -188,7 +189,11 @@ export function createHandler(deps: Deps = {}) {
       }
 
       if (method === "GET" && pathname === "/api/config") {
-        return json({ jiraBase: JIRA_BASE, jiraConfigured: !JIRA_BASE.includes("CHANGEME") });
+        return json({
+          version: await currentVersion(),
+          jiraBase: JIRA_BASE,
+          jiraConfigured: !JIRA_BASE.includes("CHANGEME"),
+        });
       }
 
       // Tracked rows, joined with what is currently on disk. A row whose session
@@ -326,7 +331,7 @@ export function start(port = DEFAULT_PORT, deps: Deps = {}) {
 if (import.meta.main) {
   const port = Number(Bun.env.PORT ?? DEFAULT_PORT);
   const server = start(port);
-  console.log(`claude-tracker  http://${HOST}:${server.port}`);
+  console.log(`claude-tracker ${await currentVersion()}  http://${HOST}:${server.port}`);
   if (JIRA_BASE.includes("CHANGEME")) {
     console.log(`  note: set JIRA_BASE at the top of server.ts to make ticket links work`);
   }

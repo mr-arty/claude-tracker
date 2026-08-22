@@ -32,9 +32,26 @@ Set `JIRA_BASE` at the top of `server.ts` once to make ticket links work.
 | `index.html` | The UI |
 | `MANUAL-CHECKLIST.md` | The UI test pass |
 | `TODOS.md` | Deferred work, with reasons |
+| `VERSION` / `version.ts` | Current version, semver parsing and bumping |
+| `release.ts` | Cut a release: bump, changelog, commit, tag |
 
 State lives in `~/.claude-tracker/annotations.json` and is safe to hand-edit.
 
+## Releasing
+
+Write what changed under `## [Unreleased]` in `CHANGELOG.md` as you go, then:
+
 ```bash
-bun test    # 94 tests, no dependencies
+bun run release.ts minor --dry   # show what would happen
+bun run release.ts minor         # bump, changelog, commit, tag
+```
+
+It refuses to run on a dirty tree, on failing tests, with an empty Unreleased
+section, or when the tag already exists. Each of those would record something
+untrue. Semver here versions the `annotations.json` format and the HTTP surface:
+major means a stored file stops loading, minor means new capability with old
+files still working, patch means nothing observable changed.
+
+```bash
+bun test    # 124 tests, no dependencies
 ```

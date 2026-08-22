@@ -1,6 +1,6 @@
 # Manual UI checklist
 
-The server has 94 automated tests. The UI does not — that was a deliberate
+The server has 124 automated tests. The UI does not — that was a deliberate
 call: it is ~500 lines you exercise daily, and a browser harness would be more
 machinery than the thing it tests. This is the repeatable pass instead.
 
@@ -108,6 +108,10 @@ bun run server.ts # http://127.0.0.1:4000
 - [ ] **Jira banner.** With `JIRA_BASE` still set to `CHANGEME`, a banner names
       the constant and the file. Ticket keys render as plain text, not dead
       links. Set a real host, reload, banner disappears and keys become links.
+- [ ] **Priority label.** Every row shows `PRIORITY` above its dropdown, and the
+      star, dropdown, and buttons sit on one baseline rather than stair-stepping.
+- [ ] **Version footer.** The bottom of the page reads `Version: <x.y.z>` and
+      matches `cat VERSION`.
 - [ ] **Dark mode.** Switch your OS theme. Text stays readable, the dead-row and
       partial-rollup colours remain distinguishable.
 
