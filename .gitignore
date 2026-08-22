@@ -8,3 +8,6 @@ fixtures.local.json
 # Tooling scratch, created by gstack. Currently empty, but anything it writes
 # here is local state, not source.
 .gstack/
+
+#
+claude-sessions.txt
