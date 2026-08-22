@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-tracker</title>
+<style>
+  :root {
+    --bg: #fbfbfa;      --panel: #fff;     --line: #e4e2dd;
+    --ink: #1b1a17;     --dim: #6f6b63;    --faint: #9a958c;
+    --accent: #2f6f4f;  --accent-soft: #eaf3ee;
+    --warn: #a4472c;    --warn-soft: #fbeee9;
+    --star: #c8891a;
+    --radius: 6px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;    --panel: #1d1d22;  --line: #2e2e36;
+      --ink: #e8e6e1;   --dim: #9b968d;    --faint: #6d6860;
+      --accent: #6bbd90; --accent-soft: #1c2b23;
+      --warn: #e08b6d;  --warn-soft: #2d1f1a;
+      --star: #e0aa47;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 22px 80px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  h1 { font-size: 17px; font-weight: 620; margin: 0; letter-spacing: -0.01em; }
+  .count { color: var(--faint); font-size: 13px; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 22px; }
+  .sub code { font-family: var(--mono); font-size: 12px; }
+
+  .bar { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+  input[type=search], input[type=text] {
+    font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 11px;
+  }
+  input[type=search] { flex: 1; min-width: 220px; }
+  input:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  button {
+    font: inherit; color: inherit; background: var(--panel); cursor: pointer;
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 7px 13px;
+  }
+  button:hover { border-color: var(--dim); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 550; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { border-color: transparent; background: none; color: var(--dim); padding: 4px 7px; }
+  button.ghost:hover { color: var(--ink); background: var(--bg); }
+
+  .group { margin-bottom: 26px; }
+  .group > h2 {
+    font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--faint); margin: 0 0 8px; font-family: var(--mono);
+  }
+
+  .row {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 11px 13px; margin-bottom: 7px;
+    display: grid; grid-template-columns: 22px 1fr auto; gap: 11px; align-items: start;
+  }
+  .row.dead { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+
+  .rollup { font-size: 15px; line-height: 1.4; text-align: center; user-select: none; }
+  .rollup[data-state=all]     { color: var(--accent); }
+  .rollup[data-state=partial] { color: var(--star); }
+  .rollup[data-state=none]    { color: var(--faint); }
+
+  .name {
+    font-weight: 550; border: 1px solid transparent; border-radius: 4px;
+    padding: 1px 4px; margin: -1px -4px 3px; width: 100%; background: none;
+    font-size: 14px; color: inherit; font-family: inherit;
+  }
+  .name:hover { border-color: var(--line); }
+  .name::placeholder { color: var(--faint); font-weight: 400; font-style: italic; }
+
+  .meta { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; color: var(--dim); font-size: 12px; }
+  .sid { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .proj { font-family: var(--mono); font-size: 11.5px; }
+  .dead-flag { color: var(--warn); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .tickets { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 5px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 12px;
+    border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px 2px 6px; background: var(--bg);
+  }
+  .chip.done { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 34%, transparent); }
+  .chip.done a { text-decoration: line-through; color: var(--dim); }
+  .chip input { margin: 0; cursor: pointer; accent-color: var(--accent); }
+  .chip a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--faint); }
+  .chip a:hover { color: var(--accent); }
+  .chip .x { cursor: pointer; color: var(--faint); font-size: 13px; line-height: 1; }
+  .chip .x:hover { color: var(--warn); }
+
+  .tags { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .tag {
+    font-size: 11px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 1px 6px; color: var(--dim); cursor: pointer;
+  }
+  .tag:hover { border-color: var(--accent); color: var(--accent); }
+
+  .actions { display: flex; gap: 5px; align-items: center; }
+  select {
+    font: inherit; font-size: 12px; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 6px;
+  }
+  .star { font-size: 15px; line-height: 1; padding: 4px 6px; }
+  .star[data-on="true"] { color: var(--star); }
+  .star[data-on="false"] { color: var(--line); }
+
+  dialog {
+    border: 1px solid var(--line); border-radius: 9px; background: var(--panel); color: var(--ink);
+    padding: 0; width: min(760px, 94vw); max-height: 82vh;
+  }
+  dialog::backdrop { background: rgb(0 0 0 / 0.42); }
+  .dhead { padding: 15px 18px 11px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .dhead h3 { margin: 0; font-size: 14px; font-weight: 620; }
+  .dbody { padding: 12px 18px 18px; overflow-y: auto; max-height: calc(82vh - 62px); }
+
+  .cand { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 7px; display: flex; gap: 12px; align-items: center; }
+  .cand:hover { border-color: var(--dim); }
+  .cand-main { flex: 1; min-width: 0; }
+  .cand-title { font-weight: 540; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cand-title.untitled { color: var(--faint); font-weight: 400; font-style: italic; }
+  .pill { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+  .pill.none { background: none; color: var(--faint); border-color: var(--line); }
+
+  .empty { text-align: center; padding: 40px 20px; color: var(--dim); border: 1px dashed var(--line); border-radius: var(--radius); }
+  .empty strong { display: block; color: var(--ink); font-weight: 560; margin-bottom: 5px; }
+  .empty code { font-family: var(--mono); font-size: 12px; }
+
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 9px 17px; border-radius: 20px;
+    font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .16s; z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+  .banner { background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); color: var(--warn); padding: 8px 12px; border-radius: var(--radius); font-size: 13px; margin-bottom: 16px; }
+  .banner code { font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>claude-tracker</h1>
+    <span class="count" id="count"></span>
+  </header>
+  <p class="sub">Working set. Finished rows get deleted; search still finds them on disk.</p>
+
+  <div id="jira-banner"></div>
+
+  <div class="bar">
+    <input type="search" id="q" placeholder="Search every session on disk by ticket, e.g. PROJ-558" autocomplete="off">
+    <button class="primary" id="add">+ Add session</button>
+  </div>
+
+  <div id="main"></div>
+</div>
+
+<dialog id="picker">
+  <div class="dhead">
+    <h3>Sessions on disk, not tracked</h3>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input type="text" id="manual" placeholder="or paste a UUID" style="width:290px;font-family:var(--mono);font-size:12px">
+      <button id="manual-add">Track</button>
+      <button class="ghost" id="picker-close">Close</button>
+    </div>
+  </div>
+  <div class="dbody" id="candidates"></div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"];
+const ROLLUP = { none: "□", partial: "◑", all: "✓" };
+const $ = (sel) => document.querySelector(sel);
+
+let rows = [];
+let config = { jiraBase: "", jiraConfigured: false };
+let searching = null;
+
+const api = async (path, opts) => {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok && body.error) throw new Error(body.error);
+  return body;
+};
+const put = (id, patch) =>
+  api(`/api/rows/${id}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(patch) });
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ago = (ms) => {
+  if (!ms) return "";
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 60) return `${m}m ago`;
+  if (m < 1440) return `${Math.round(m / 60)}h ago`;
+  return `${Math.round(m / 1440)}d ago`;
+};
+
+let toastTimer;
+function toast(msg) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+async function copy(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------- rendering ----------
+
+function ticketChip(row, t) {
+  const link = config.jiraConfigured
+    ? `<a href="${esc(config.jiraBase)}/${esc(t.key)}" target="_blank" rel="noreferrer">${esc(t.key)}</a>`
+    : `<span title="Set JIRA_BASE in server.ts to link tickets">${esc(t.key)}</span>`;
+  return `<span class="chip ${t.done ? "done" : ""}">
+    <input type="checkbox" ${t.done ? "checked" : ""} data-act="toggle" data-id="${row.id}" data-key="${esc(t.key)}" aria-label="${esc(t.key)} done">
+    ${link}
+    <span class="x" data-act="untick" data-id="${row.id}" data-key="${esc(t.key)}" title="Remove ticket">&times;</span>
+  </span>`;
+}
+
+function rowHtml(row) {
+  const starred = row.priority === "Highest" || row.priority === "High";
+  return `<div class="row ${row.alive ? "" : "dead"}">
+    <div class="rollup" data-state="${row.rollup}" title="${row.rollup}">${ROLLUP[row.rollup]}</div>
+    <div>
+      <input class="name" value="${esc(row.name)}" placeholder="Untitled session" data-act="rename" data-id="${row.id}">
+      <div class="tickets">
+        ${row.tickets.map((t) => ticketChip(row, t)).join("")}
+        <button class="ghost" style="font-size:12px" data-act="addticket" data-id="${row.id}">+ ticket</button>
+      </div>
+      <div class="meta">
+        <span class="sid">${esc(row.id.slice(0, 8))}</span>
+        ${row.alive ? `<span class="proj">${esc(row.projectName ?? "")}</span><span>${ago(row.lastActive)}</span>`
+                    : `<span class="dead-flag">not on disk</span>`}
+        <span class="tags">
+          ${row.tags.map((t) => `<span class="tag" data-act="untag" data-id="${row.id}" data-tag="${esc(t)}" title="Remove tag">${esc(t)}</span>`).join("")}
+          <button class="ghost" style="font-size:11px" data-act="addtag" data-id="${row.id}">+ tag</button>
+        </span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="ghost star" data-on="${starred}" data-act="cycle" data-id="${row.id}" title="${esc(row.priority)}">${starred ? "★" : "☆"}</button>
+      <select data-act="priority" data-id="${row.id}" title="Priority">
+        ${PRIORITIES.map((p) => `<option ${p === row.priority ? "selected" : ""}>${p}</option>`).join("")}
+      </select>
+      <button data-act="resume" data-id="${row.id}" ${row.alive ? "" : "disabled title='session is not on disk'"}>Resume</button>
+      <button class="ghost" data-act="delete" data-id="${row.id}" title="Remove from working set">&times;</button>
+    </div>
+  </div>`;
+}
+
+function render() {
+  const main = $("#main");
+  $("#count").textContent = rows.length ? `${rows.length} tracked` : "";
+
+  if (searching) {
+    const { query, results } = searching;
+    main.innerHTML = `<div class="group"><h2>Search &mdash; ${esc(query)}</h2>` + (
+      results.length === 0
+        ? `<div class="empty"><strong>No session mentions ${esc(query)}</strong>Search covers every transcript on disk, tracked or not.</div>`
+        : results.map((r) => `<div class="row">
+            <div class="rollup" data-state="none">&middot;</div>
+            <div>
+              <div class="name" style="border:0">${r.tickets.map((t) => `<span class="chip">${esc(t)}</span>`).join(" ")}</div>
+              <div class="meta">
+                <span class="sid">${esc(r.id.slice(0, 8))}</span>
+                <span class="proj">${esc(r.projectName ?? "")}</span>
+                <span>${ago(r.lastActive)}</span>
+                ${r.tracked ? `<span style="color:var(--accent)">tracked</span>` : `<span style="color:var(--faint)">not tracked</span>`}
+              </div>
+            </div>
+            <div class="actions">
+              ${r.tracked ? "" : `<button data-act="track" data-id="${r.id}">Track</button>`}
+              <button data-act="resume" data-id="${r.id}">Resume</button>
+            </div>
+          </div>`).join("")
+    ) + `</div>`;
+    return;
+  }
+
+  if (rows.length === 0) {
+    main.innerHTML = `<div class="empty">
+      <strong>Nothing tracked yet</strong>
+      Hit <em>Add session</em> to pull one in from <code>~/.claude/projects</code>.
+    </div>`;
+    return;
+  }
+
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.alive ? (r.projectName ?? "unknown") : "not on disk";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  main.innerHTML = [...groups]
+    .map(([name, list]) => `<div class="group"><h2>${esc(name)}</h2>${list.map(rowHtml).join("")}</div>`)
+    .join("");
+}
+
+// ---------- data ----------
+
+async function load() {
+  const [cfg, data] = await Promise.all([api("/api/config"), api("/api/rows")]);
+  config = cfg;
+  rows = data.rows;
+  $("#jira-banner").innerHTML = cfg.jiraConfigured
+    ? ""
+    : `<div class="banner">Ticket links are inactive. Set <code>JIRA_BASE</code> at the top of <code>server.ts</code>.</div>`;
+  render();
+}
+
+const rowById = (id) => rows.find((r) => r.id === id);
+
+async function save(id, patch) {
+  try {
+    const updated = await put(id, patch);
+    const i = rows.findIndex((r) => r.id === id);
+    if (i >= 0) rows[i] = updated;
+    render();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+// ---------- actions ----------
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-act]");
+  if (!el) return;
+  const { act, id } = el.dataset;
+  const row = rowById(id);
+
+  if (act === "toggle") {
+    const tickets = row.tickets.map((t) => (t.key === el.dataset.key ? { ...t, done: el.checked } : t));
+    return save(id, { tickets });
+  }
+  if (act === "untick") {
+    return save(id, { tickets: row.tickets.filter((t) => t.key !== el.dataset.key) });
+  }
+  if (act === "addticket") {
+    const key = prompt("Ticket key, e.g. PROJ-558");
+    if (!key) return;
+    return save(id, { tickets: [...row.tickets, { key: key.trim().toUpperCase(), done: false }] });
+  }
+  if (act === "addtag") {
+    const tag = prompt("Tag");
+    if (!tag) return;
+    return save(id, { tags: [...new Set([...row.tags, tag.trim().toLowerCase()])] });
+  }
+  if (act === "untag") {
+    return save(id, { tags: row.tags.filter((t) => t !== el.dataset.tag) });
+  }
+  if (act === "cycle") {
+    return save(id, { priority: row.priority === "Highest" ? "Medium" : "Highest" });
+  }
+  if (act === "delete") {
+    if (!confirm(`Remove ${row.name || id.slice(0, 8)} from the working set?\n\nThe transcript on disk is untouched, and search will still find it.`)) return;
+    await api(`/api/rows/${id}`, { method: "DELETE" });
+    rows = rows.filter((r) => r.id !== id);
+    return render();
+  }
+  if (act === "resume") {
+    const res = await api(`/api/resume/${id}`, { method: "POST" });
+    if (res.launched) return toast("Terminal opened");
+    const ok = await copy(res.command);
+    return toast(ok ? "No terminal found. Command copied." : res.command);
+  }
+  if (act === "track") {
+    await put(id, {});
+    searching = null;
+    $("#q").value = "";
+    return load();
+  }
+});
+
+document.addEventListener("change", (e) => {
+  const el = e.target.closest("[data-act=priority]");
+  if (el) save(el.dataset.id, { priority: el.value });
+});
+
+// Rename commits on blur or Enter, not on every keystroke.
+document.addEventListener("blur", (e) => {
+  const el = e.target.closest?.("[data-act=rename]");
+  if (!el) return;
+  const row = rowById(el.dataset.id);
+  if (row && el.value !== row.name) save(el.dataset.id, { name: el.value });
+}, true);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.matches?.("[data-act=rename]")) e.target.blur();
+  if (e.key === "Escape" && document.activeElement === $("#q")) {
+    $("#q").value = "";
+    searching = null;
+    render();
+  }
+});
+
+// Live search. The server answers from an in-memory index in about 3ms, so a
+// short debounce is only there to avoid a request per keystroke.
+let searchTimer;
+$("#q").addEventListener("input", (e) => {
+  const q = e.target.value.trim();
+  clearTimeout(searchTimer);
+  if (!q) {
+    searching = null;
+    return render();
+  }
+  searchTimer = setTimeout(async () => {
+    searching = await api(`/api/search?q=${encodeURIComponent(q)}`);
+    render();
+  }, 140);
+});
+
+// ---------- add picker ----------
+
+$("#add").addEventListener("click", async () => {
+  const box = $("#candidates");
+  box.innerHTML = `<div class="empty">Scanning&hellip;</div>`;
+  $("#picker").showModal();
+  const { sessions } = await api("/api/untracked");
+  if (sessions.length === 0) {
+    box.innerHTML = `<div class="empty"><strong>Every session on disk is already tracked</strong>Or there are none in <code>~/.claude/projects</code>.</div>`;
+    return;
+  }
+  box.innerHTML = sessions.map((s) => `<div class="cand">
+    <div class="cand-main">
+      <div class="cand-title ${s.suggestedName ? "" : "untitled"}">${esc(s.suggestedName ?? "(no title)")}</div>
+      <div class="meta">
+        <span class="sid">${esc(s.id.slice(0, 8))}</span>
+        <span class="proj">${esc(s.projectName)}</span>
+        <span>${ago(s.lastActive)}</span>
+        ${s.suggestedTicket
+          ? `<span class="pill">${esc(s.suggestedTicket)}</span>`
+          : `<span class="pill none">no ticket</span>`}
+      </div>
+    </div>
+    <button class="primary" data-track="${s.id}">Track</button>
+  </div>`).join("");
+
+  box.onclick = async (e) => {
+    const btn = e.target.closest("[data-track]");
+    if (!btn) return;
+    const s = sessions.find((x) => x.id === btn.dataset.track);
+    await put(s.id, {
+      name: s.suggestedName ?? "",
+      tickets: s.suggestedTicket ? [{ key: s.suggestedTicket, done: false }] : [],
+    });
+    btn.closest(".cand").remove();
+    await load();
+  };
+});
+
+$("#picker-close").addEventListener("click", () => $("#picker").close());
+
+$("#manual-add").addEventListener("click", async () => {
+  const id = $("#manual").value.trim();
+  if (!id) return;
+  try {
+    await put(id, { name: "" });
+    $("#manual").value = "";
+    $("#picker").close();
+    await load();
+  } catch {
+    toast("That is not a session id");
+  }
+});
+
+load();
+</script>
+</body>
+</html>
