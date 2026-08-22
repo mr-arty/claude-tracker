@@ -10,6 +10,30 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+### Added
+- Search matches session ids and session titles, not only ticket keys. Results
+  are ranked id, then owned ticket, then title, then mention, and each row says
+  which kind it was. A session that merely discussed a ticket can no longer
+  outrank the one that worked on it.
+- Copy ID button on every row, copying the full session id. Stays enabled on a
+  dead row, where Resume is disabled.
+- Priority label above the priority selector.
+- Version footer on the page, served from VERSION via /api/config.
+- VERSION, CHANGELOG.md, and release.ts, which refuses to run on a dirty tree,
+  failing tests, an empty Unreleased section, or an existing tag.
+
+### Changed
+- The Jira base URL comes from CT_JIRA_BASE rather than a constant in the
+  source, so no real hostname enters git. It is also injectable, so tests do not
+  depend on whether the variable happens to be set in the shell running them.
+- The untracked listing reads its ticket and name from the search index instead
+  of re-extracting the same transcripts.
+
+### Fixed
+- The Add session button was white on light green in dark mode, at 2.26:1.
+  Filled buttons now take their text colour from a theme-aware token; every
+  filled button measures 4.69:1 or better in both themes.
+
 ## [0.1.0] - 2026-08-22
 
 First working version. Replaces a text file of `claude --resume <uuid>` lines.
