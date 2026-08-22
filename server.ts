@@ -25,9 +25,16 @@ import { extractSession, extractAllTickets } from "./extract.ts";
 import { read, upsert, remove, rollup, storePath, CorruptStoreError, type Annotation } from "./annotations.ts";
 import { currentVersion } from "./version.ts";
 
-/** Set this once. Everything else in the app works without it. */
-const JIRA_BASE = "https://CHANGEME.atlassian.net/browse";
-//                        ^^^^^^^^ your Jira host
+/**
+ * CONFIG. Your Jira browse URL, no trailing slash. Pairs with CT_TICKET_PREFIXES
+ * in extract.ts.
+ *
+ * Supplied by the environment rather than hardcoded so a real hostname never
+ * enters git. Everything except clickable ticket links works without it.
+ *
+ *   CT_JIRA_BASE=https://your-host.atlassian.net/browse bun run server.ts
+ */
+const JIRA_BASE = Bun.env.CT_JIRA_BASE ?? "https://CHANGEME.atlassian.net/browse";
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 4000;
@@ -333,6 +340,6 @@ if (import.meta.main) {
   const server = start(port);
   console.log(`claude-tracker ${await currentVersion()}  http://${HOST}:${server.port}`);
   if (JIRA_BASE.includes("CHANGEME")) {
-    console.log(`  note: set JIRA_BASE at the top of server.ts to make ticket links work`);
+    console.log(`  note: set CT_JIRA_BASE=https://your-host.atlassian.net/browse to make ticket links work`);
   }
 }

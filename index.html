@@ -387,7 +387,7 @@ async function load() {
   $("#footer").textContent = `Version: ${cfg.version ?? "unknown"}`;
   $("#jira-banner").innerHTML = cfg.jiraConfigured
     ? ""
-    : `<div class="banner">Ticket links are inactive. Set <code>JIRA_BASE</code> at the top of <code>server.ts</code>.</div>`;
+    : `<div class="banner">Ticket links are inactive. Start the server with <code>CT_JIRA_BASE=https://your-host.atlassian.net/browse</code>.</div>`;
   render();
 }
 

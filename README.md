@@ -7,7 +7,15 @@ Jira tickets. Replaces a notepad full of `claude --resume <uuid>` lines.
 bun run server.ts     # http://127.0.0.1:4000
 ```
 
-Set `JIRA_BASE` at the top of `server.ts` once to make ticket links work.
+Two things are configured from the environment so no real value enters git:
+
+```bash
+export CT_JIRA_BASE="https://your-host.atlassian.net/browse"   # clickable tickets
+export CT_TICKET_PREFIXES="ABC,XYZ"                            # defaults to NR
+```
+
+Without them the app still works; ticket keys just render as plain text and a
+banner says so.
 
 ## What it does
 

@@ -110,9 +110,9 @@ bun run server.ts # http://127.0.0.1:4000
       covers every transcript, tracked or not.
 - [ ] **Everything already tracked.** Track every session, then open the picker.
       It says so rather than showing a blank dialog.
-- [ ] **Jira banner.** With `JIRA_BASE` still set to `CHANGEME`, a banner names
-      the constant and the file. Ticket keys render as plain text, not dead
-      links. Set a real host, reload, banner disappears and keys become links.
+- [ ] **Jira banner.** Start without `CT_JIRA_BASE`; a banner names the variable
+      and ticket keys render as plain text rather than dead links. Restart with
+      it set, reload, banner disappears and keys become links that resolve.
 - [ ] **Priority label.** Every row shows `PRIORITY` above its dropdown, and the
       star, dropdown, and buttons sit on one baseline rather than stair-stepping.
 - [ ] **Version footer.** The bottom of the page reads `Version: <x.y.z>` and
