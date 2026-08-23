@@ -29,19 +29,23 @@ banner says so.
   row loses no history. It matches session ids, titles, and ticket keys; a
   session that owns a ticket ranks above one that merely mentioned it.
 
+<!-- Example layout - 2 projects -->
+
+![Example layout](Screenshot_modified.png)
+
 ## Layout
 
-| File | Job |
-|---|---|
-| `scan.ts` | Find sessions, resolve real project paths from `cwd` |
-| `extract.ts` | Transcript to ticket and name |
-| `annotations.ts` | The working set, atomic writes, serialised mutations |
-| `server.ts` | Routes, ticket index, guarded resume |
-| `index.html` | The UI |
-| `MANUAL-CHECKLIST.md` | The UI test pass |
-| `TODOS.md` | Deferred work, with reasons |
-| `VERSION` / `version.ts` | Current version, semver parsing and bumping |
-| `release.ts` | Cut a release: bump, changelog, commit, tag |
+| File                     | Job                                                  |
+| ------------------------ | ---------------------------------------------------- |
+| `scan.ts`                | Find sessions, resolve real project paths from `cwd` |
+| `extract.ts`             | Transcript to ticket and name                        |
+| `annotations.ts`         | The working set, atomic writes, serialised mutations |
+| `server.ts`              | Routes, ticket index, guarded resume                 |
+| `index.html`             | The UI                                               |
+| `MANUAL-CHECKLIST.md`    | The UI test pass                                     |
+| `TODOS.md`               | Deferred work, with reasons                          |
+| `VERSION` / `version.ts` | Current version, semver parsing and bumping          |
+| `release.ts`             | Cut a release: bump, changelog, commit, tag          |
 
 State lives in `~/.claude-tracker/annotations.json` and is safe to hand-edit.
 
