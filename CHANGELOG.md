@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-05
+
 ### Added
 - Full-text search over transcript bodies. Search previously matched only session
   ids, titles and ticket keys, which left every session carrying no ticket
