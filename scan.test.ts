@@ -134,17 +134,45 @@ describe("scanSessions", () => {
 });
 
 describe("scanSessions against the real corpus", () => {
-  test("resolves every project path without the lossy decode", async () => {
+  test("resolves every project path from the recorded cwd, not the lossy decode", async () => {
     const sessions = await scanSessions(projectsRoot());
     if (sessions.length === 0) return; // no local sessions on this machine
 
-    const byDir = new Map<string, string>();
-    for (const s of sessions) byDir.set(s.dir, s.project);
+    const byDir = new Map<string, typeof sessions>();
+    for (const s of sessions) byDir.set(s.dir, [...(byDir.get(s.dir) ?? []), s]);
 
-    // Regression guard for D6: if this drops back to the hyphen-to-slash decode,
-    // nearly every directory resolves wrong.
-    const decoded = [...byDir].filter(([dir, project]) => project === fallbackProjectPath(dir));
-    expect(decoded.length).toBeLessThanOrEqual(1);
+    // Regression guard for D6. Counting directories that merely EQUAL the naive
+    // decode is not the same question: a path with no hyphen in any segment
+    // decodes to itself, so a correct resolution looks like a regression.
+    const wrong: string[] = [];
+    let checked = 0;
+    for (const [dir, list] of byDir) {
+      let cwd: string | null = null;
+      for (const s of list) {
+        cwd = cwdFromTranscript(await Bun.file(s.path).slice(0, 64 * 1024).text());
+        if (cwd) break;
+      }
+      if (!cwd) continue; // nothing recorded a cwd, so the fallback is correct here
+      checked++;
+      for (const s of list) {
+        if (s.project !== cwd) wrong.push(`${dir}: resolved ${s.project}, transcript says ${cwd}`);
+      }
+    }
+
+    expect(wrong).toEqual([]);
+    expect(checked).toBeGreaterThan(0); // otherwise the loop above asserted nothing
+  });
+
+  test("the lossy decode really is lossy, so the guard above is not vacuous", async () => {
+    const sessions = await scanSessions(projectsRoot());
+    if (sessions.length === 0) return;
+
+    // If every local path happened to survive the hyphen decode, the test above
+    // would pass under a regression too. At least one must disagree.
+    const dirs = new Set(sessions.map((s) => s.dir));
+    const byDir = new Map(sessions.map((s) => [s.dir, s.project]));
+    const disagree = [...dirs].filter((d) => byDir.get(d) !== fallbackProjectPath(d));
+    expect(disagree.length).toBeGreaterThan(0);
   });
 
   test("no project name contains a slash", async () => {

@@ -330,6 +330,100 @@ describe("GET /api/search", () => {
   });
 });
 
+/**
+ * The tier that exists for the 21-of-37 sessions carrying no ticket at all: every
+ * git chore, every incident debug. Ticket-only search cannot see any of them.
+ */
+describe("GET /api/search — body text", () => {
+  const C = "cccccccc-3333-4333-8333-333333333333";
+  const ids = (results: { id: string }[]) => results.map((r) => r.id);
+  const kinds = (results: { id: string; kind: string }[]) => results.map((r) => [r.id, r.kind]);
+
+  /** A session with no ticket anywhere, whose title shares no words with its body. */
+  async function unticketed(...records: unknown[]) {
+    await Bun.sleep(10); // mtime must move, or the index correctly declines to re-read
+    await writeFile(
+      join(root, "-home-dev-work-example-service", `${C}.jsonl`),
+      jsonl(
+        { cwd: "/home/dev/work/example-service", aiTitle: "Repository disk space cleanup" },
+        ...records,
+      ),
+    );
+  }
+  const said = (content: unknown) => ({ type: "user", message: { content } });
+
+  test("finds a session that carries no ticket at all, by a word in its body", async () => {
+    const h = handler();
+    await unticketed(said("the trivy exemption needed an allowlist entry in the scanner config"));
+    const { results } = await (await h(GET("/api/search?q=trivy exemption"))).json();
+    expect(kinds(results)).toEqual([[C, "text"]]);
+  });
+
+  test("body text ranks below a ticket mention", async () => {
+    // A mentions the key in upper case, so it indexes as a mention. C says it in
+    // lower case, which the case-sensitive ticket regex ignores but text search sees.
+    const h = handler();
+    await unticketed(said(`we talked about ${key(549).toLowerCase()} in passing but never touched it`));
+    const { results } = await (await h(GET(`/api/search?q=${key(549)}`))).json();
+    expect(kinds(results)).toEqual([[A, "mention"], [C, "text"]]);
+  });
+
+  test("a hit carries a snippet that reconstructs its context", async () => {
+    const h = handler();
+    await unticketed(said("we rolled back the release because the trivy exemption broke the gate"));
+    const { results } = await (await h(GET("/api/search?q=trivy exemption"))).json();
+    const { snippet } = results[0];
+    expect(snippet.match).toBe("trivy exemption");
+    expect(snippet.before + snippet.match + snippet.after).toBe(
+      "we rolled back the release because the trivy exemption broke the gate",
+    );
+  });
+
+  test("a long body is elided on both sides of the match", async () => {
+    const h = handler();
+    const pad = "filler words to push the match into the middle of a long body. ".repeat(4);
+    await unticketed(said(`${pad}the trivy exemption again. ${pad}`));
+    const { results } = await (await h(GET("/api/search?q=trivy exemption"))).json();
+    const { snippet } = results[0];
+    expect(snippet.before.startsWith("…")).toBe(true);
+    expect(snippet.after.endsWith("…")).toBe(true);
+    expect(snippet.match).toBe("trivy exemption");
+  });
+
+  test("the stronger tiers carry no snippet", async () => {
+    const { results } = await (await handler()(GET(`/api/search?q=${A.slice(0, 8)}`))).json();
+    expect(results[0].kind).toBe("id");
+    expect(results[0].snippet).toBeNull();
+  });
+
+  test("a two-character query does not fall through to body text", async () => {
+    const h = handler();
+    await unticketed(said("the deployment rollout finished cleanly on every cluster"));
+    expect((await (await h(GET("/api/search?q=de"))).json()).results).toEqual([]);
+    expect(ids((await (await h(GET("/api/search?q=dep"))).json()).results)).toEqual([C]);
+  });
+
+  test("tool output is not searchable — it would find the file, not the session", async () => {
+    const h = handler();
+    await unticketed(
+      said("run the scan and report back"),
+      said([{ type: "tool_result", content: "matched zzmarker in three files" }]),
+    );
+    expect((await (await h(GET("/api/search?q=zzmarker"))).json()).results).toEqual([]);
+    expect(ids((await (await h(GET("/api/search?q=report back"))).json()).results)).toEqual([C]);
+  });
+
+  test("editing a transcript changes what body-text search finds", async () => {
+    const h = handler();
+    await unticketed(said("the original body was about kafka rebalancing"));
+    expect(ids((await (await h(GET("/api/search?q=kafka"))).json()).results)).toEqual([C]);
+
+    await unticketed(said("the body now talks about postgres vacuuming instead"));
+    expect((await (await h(GET("/api/search?q=kafka"))).json()).results).toEqual([]);
+    expect(ids((await (await h(GET("/api/search?q=postgres"))).json()).results)).toEqual([C]);
+  });
+});
+
 describe("errors and edges", () => {
   test("a corrupt annotations file returns 500 and does not overwrite it", async () => {
     await writeFile(annotationsPath, "{ half an edit");

@@ -26,8 +26,14 @@ banner says so.
   priority, a name, and tags.
 - Resume opens a terminal running that session, falling back to the clipboard.
 - Search covers every session on disk, not just the tracked ones, so deleting a
-  row loses no history. It matches session ids, titles, and ticket keys; a
-  session that owns a ticket ranks above one that merely mentioned it.
+  row loses no history. It matches session ids, titles, ticket keys, and the
+  body text of the transcript; a session that owns a ticket ranks above one that
+  merely mentioned it, and body text ranks below both. Full-text hits show the
+  matching phrase in context, which is how you find the sessions that never
+  carried a ticket at all.
+- Only what was said is indexed, not tool output or file dumps. That is 2% of
+  the bytes on disk, and searching the other 98% finds the file rather than the
+  session you were trying to remember.
 
 <!-- Example layout - 2 projects -->
 
@@ -65,5 +71,5 @@ major means a stored file stops loading, minor means new capability with old
 files still working, patch means nothing observable changed.
 
 ```bash
-bun test    # 124 tests, no dependencies
+bun test    # 144 tests, no dependencies
 ```

@@ -10,6 +10,27 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+### Added
+- Full-text search over transcript bodies. Search previously matched only session
+  ids, titles and ticket keys, which left every session carrying no ticket
+  invisible — 21 of 37 locally, being every git chore and every incident debug.
+  Body-text hits rank below ticket mentions and show the matching phrase in
+  context. Only what was said is indexed, not tool output or file dumps: those
+  are 98% of the corpus and matching them finds the file, not the session.
+
+### Changed
+- Tags render highlighted at rest instead of only on hover, so a row's tags are
+  visible without pointing at them. Hover now turns a tag red-orange, matching
+  the delete affordance already used by the `×` on a ticket chip.
+- `GET /api/search` results carry a `snippet` object on body-text hits, and
+  `kind` can now be `text`. Additive; existing fields are unchanged.
+
+### Notes
+- `claude --resume` was confirmed to append to the existing transcript rather
+  than forking a new one, so a tracked session id stays valid after a resume.
+  This had been assumed but never proven; the measurement is recorded in
+  MANUAL-CHECKLIST.md.
+
 ## [0.2.1] - 2026-08-22
 
 ### Fixed

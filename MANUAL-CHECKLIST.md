@@ -50,6 +50,13 @@ bun run server.ts # http://127.0.0.1:4000
 - [ ] **Priority.** Set a row to `Highest`. The star fills and turns amber.
       Set it to `Low`. The star empties. Reload — both survive.
 - [ ] **Tags.** Add a tag, reload, it survives. Click it to remove it.
+- [ ] **Tags are highlighted at rest.** A row's tags are visible as filled chips
+      without hovering over them. If they only light up under the pointer, the
+      resting style has regressed to the old muted one.
+- [ ] **Tag hover reads as delete.** Hover a tag. It turns red-orange, the same
+      colour the `×` on a ticket chip turns, and the tooltip says *Remove tag*.
+      It must not turn green — that is the colour for done, and clicking here
+      deletes rather than completes.
 
 ## Resume
 
@@ -101,6 +108,21 @@ bun run server.ts # http://127.0.0.1:4000
       working set and the search clears.
 - [ ] **Escape clears.** Press Escape while focused in the search box. The table
       returns.
+- [ ] **Finds a session with no ticket at all.** Pick a git chore or an incident
+      debug session — one that never mentioned a ticket — and search a distinctive
+      phrase you remember saying in it. It comes back, labelled `TRANSCRIPT`.
+      This is the case ticket-only search could never reach.
+- [ ] **The snippet shows why it matched.** A `TRANSCRIPT` hit renders a line of
+      surrounding context with the phrase highlighted, elided with `…` when the
+      match sits mid-transcript. Readable in both light and dark mode.
+- [ ] **Body text ranks last.** Search a ticket key that one session owns, another
+      mentions, and a third merely discusses in prose. Order is `TICKET`, then
+      `MENTIONED`, then `TRANSCRIPT`.
+- [ ] **Two characters do not flood.** Type two characters of a common word.
+      No `TRANSCRIPT` hits appear. Type the third and they do.
+- [ ] **Tool output is not searchable.** Search a string that only ever appeared
+      in a command's output — a file path from a `grep` result, say. It must not
+      match. Only what was said is indexed.
 
 ## Empty and edge states
 
@@ -124,11 +146,17 @@ bun run server.ts # http://127.0.0.1:4000
 
 These block nothing until they fail, but each invalidates an assumption.
 
-- [ ] **`claude --resume` appends, it does not fork.** Note a session's mtime and
+- [x] **`claude --resume` appends, it does not fork.** Note a session's mtime and
       its directory's file count. Resume it, send one message, exit. The mtime
       changed and no new `.jsonl` appeared in that directory. **If a new file
       appears, every tracked UUID goes stale after one resume** and the core loop
       is broken — stop and redesign around the fork.
+
+      Verified 2026-09-05 against a directory holding exactly one transcript.
+      Resuming it moved the mtime from `18:03:34` to `10:17:39` and grew the file
+      235862 -> 254712 bytes, while the directory stayed at 1 file, the corpus
+      stayed at 37, and the transcript still held one `sessionId` equal to its
+      filename. Resume appends in place; tracked UUIDs survive.
 - [ ] **Sub-agent transcripts stay hidden.** There are 18 of them at
       `<project>/<session-uuid>/subagents/agent-*.jsonl`. None may ever appear
       as a row; they are not resumable.

@@ -5,36 +5,6 @@ Each item records why it was deferred, not just what it is.
 
 ---
 
-## Full-text transcript search
-
-**What:** Search the body text of transcripts, not just ticket keys. Ask "which
-session did the Trivy exemption work?" and get an answer even when no ticket was
-mentioned in that session.
-
-**Why:** The v1 search index (D8) maps sessions to `NR-####` keys only. Measured:
-**21 of 37 sessions carry no ticket at all** — every git chore, every incident
-debug, every exploratory session. Those are invisible to ticket-only search, and
-incident debugging is exactly the category you would most want to find again six
-months later.
-
-**Pros:** Search covers the whole corpus rather than the 16 ticketed sessions.
-Makes the tool useful for "how did I fix that" questions, not just "what did I do
-for PROJ-558".
-
-**Cons:** A real inverted index over 130 MB is a different animal from the 9 KB
-ticket map. The naive alternative, grep-per-query, measured at 192 ms and grows
-linearly with the corpus. Either way it is the largest single piece of work in
-the project.
-
-**Context:** The D8 ticket index establishes the mtime-invalidation pattern that
-full-text search would reuse. Build order matters — doing full-text first means
-inventing that pattern twice. Deferred because guessing at what you want to
-search for, before living with ticket search, is how you build the wrong index.
-
-**Depends on / blocked by:** D8 ticket index must land first.
-
----
-
 ## Real Jira API integration
 
 **What:** Pull ticket titles, live status, and assignee from Jira instead of
@@ -63,15 +33,13 @@ decision on where to store it.
 
 ---
 
-## One-time validation, not a build task
+## Resolved
 
-**Does `claude --resume` fork the transcript?** Investigation found 37 files with
-exactly one `sessionId` each and filename always equal to that id, which is
-consistent with resume appending in place — but it was not proven. If resume
-creates a NEW file, every tracked UUID goes stale after one use and the core loop
-breaks.
+**Full-text transcript search** — landed 2026-09-05. Prose only, not tool output:
+that is 2% of the bytes and the reason a plain scan beat an inverted index. The
+"130 MB is a different animal" concern priced the raw corpus; the indexed slice
+is 3.2 MB. See the `TicketIndex` comment in `server.ts`.
 
-Cheap check: note a session's mtime, resume it, exit, confirm the mtime changed
-and no new `.jsonl` appeared in that directory. This is on the manual checklist
-rather than here because it takes thirty seconds and blocks nothing until it
-fails.
+**Does `claude --resume` fork the transcript?** — no, answered 2026-09-05. It
+appends in place, so a tracked session id stays valid. Measured in
+`MANUAL-CHECKLIST.md` under One-time validations.
