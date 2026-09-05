@@ -4,7 +4,7 @@
  *   GET    /                     index.html
  *   GET    /api/rows             tracked rows, joined with on-disk metadata
  *   GET    /api/untracked        sessions not tracked, ticket and name resolved
- *   GET    /api/search?q=        session id, ticket, name or mention, from the index
+ *   GET    /api/search?q=        session id, ticket, name, mention or body text, from the index
  *   PUT    /api/rows/:id         merge one row
  *   DELETE /api/rows/:id         hard delete the row, never the transcript
  *   POST   /api/resume/:id       spawn a terminal, or fall back to the clipboard
@@ -21,7 +21,7 @@
  */
 
 import { scanSessions, projectsRoot, type SessionMeta } from "./scan.ts";
-import { extractSession, extractAllTickets } from "./extract.ts";
+import { extractSession, scanFull } from "./extract.ts";
 import { read, upsert, remove, rollup, storePath, CorruptStoreError, type Annotation } from "./annotations.ts";
 import { currentVersion } from "./version.ts";
 
@@ -69,10 +69,30 @@ export interface Deps {
  *
  * The mention tier exists because any transcript that DISCUSSES a ticket gets it
  * indexed. A session about the tracker itself can end up carrying a dozen keys it
- * never worked on, so those must never outrank a real match.
+ * never worked on, so those must never outrank a real match. Body text ranks below
+ * even that: saying a word is the weakest claim a session can make on a query.
  */
-export type MatchKind = "id" | "ticket" | "name" | "mention";
-const RANK: Record<MatchKind, number> = { id: 0, ticket: 1, name: 2, mention: 3 };
+export type MatchKind = "id" | "ticket" | "name" | "mention" | "text";
+const RANK: Record<MatchKind, number> = { id: 0, ticket: 1, name: 2, mention: 3, text: 4 };
+
+/**
+ * Below this, a query is a prefix someone is still typing. One or two characters
+ * appear in every transcript, and letting them match body text buries the id and
+ * ticket hits that were actually being aimed for. Only the text tier is gated.
+ */
+const MIN_TEXT_QUERY = 3;
+
+/** Characters of context each side of a body-text hit. */
+const SNIPPET_PAD = 60;
+
+/** Most body-text results returned. The stronger tiers are never capped. */
+const TEXT_LIMIT = 25;
+
+export interface Snippet {
+  before: string;
+  match: string;
+  after: string;
+}
 
 export interface Hit {
   id: string;
@@ -89,15 +109,25 @@ interface Entry {
   name: string | null;
   /** Every ticket appearing anywhere in the transcript, including ones only discussed. */
   mentions: Set<string>;
+  /** What was said in the session, for full-text search. */
+  prose: string;
+  /** Held alongside `prose` so a query does not lowercase the whole corpus per keystroke. */
+  proseLower: string;
 }
 
 /**
  * Searchable state for every session, held in memory.
  *
- * A full rebuild costs about 195ms over a 130MB corpus and yields roughly 9KB, so
- * a query is a map walk rather than a 192ms rescan. Invalidation reuses the mtimes
+ * A full rebuild costs about 664ms over a 152MB corpus and holds roughly 6.5MB, so
+ * a query is a map walk rather than a rescan. Invalidation reuses the mtimes
  * the directory scan already collected: no extra stat calls, and only a transcript
  * that changed is re-read.
+ *
+ * Body text is what makes it 6.5MB rather than 9KB, and it stays a plain scan
+ * rather than an inverted index on purpose: indexing prose only leaves 3.2MB, and
+ * a substring sweep of that answers a query in 1-3ms. An inverted index would be
+ * faster asymptotically while losing phrase search and snippets, both of which
+ * fall out of the scan for free.
  */
 class TicketIndex {
   private entries = new Map<string, Entry>();
@@ -109,20 +139,25 @@ class TicketIndex {
     for (const s of sessions) {
       if (this.entries.get(s.id)?.mtime === s.lastActive) continue;
       const { ticket, name, source } = await extractSession(s.path);
+      // scanFull is the only full read. extractSession keeps its 512KB probe, so
+      // which ticket a session resolves to does not change with this.
+      const { mentions, prose } = await scanFull(s.path);
       this.entries.set(s.id, {
         mtime: s.lastActive,
         owned: ticket,
         source,
         name,
-        mentions: await extractAllTickets(s.path),
+        mentions,
+        prose,
+        proseLower: prose.toLowerCase(),
       });
     }
   }
 
   /**
-   * Matches session ids, owned tickets, names, and mentioned tickets, in that
-   * order of confidence. Case-insensitive; ids and tickets match by prefix,
-   * names by substring.
+   * Matches session ids, owned tickets, names, mentioned tickets, and finally
+   * body text, in that order of confidence. Case-insensitive; ids and tickets
+   * match by prefix, names and body text by substring, so a typed phrase works.
    */
   find(query: string): Hit[] {
     const q = query.trim();
@@ -146,10 +181,37 @@ class TicketIndex {
             break;
           }
         }
+        if (!kind && lower.length >= MIN_TEXT_QUERY && e.proseLower.includes(lower)) {
+          kind = "text";
+        }
       }
       if (kind) hits.push({ id, kind });
     }
     return hits.sort((a, b) => RANK[a.kind] - RANK[b.kind]);
+  }
+
+  /**
+   * The matched phrase with its surrounding context, for a body-text hit. Sliced
+   * from prose already in memory, so this costs no read.
+   */
+  snippet(id: string, query: string): Snippet | null {
+    const e = this.entries.get(id);
+    if (!e) return null;
+    const needle = query.trim().toLowerCase();
+    const at = needle ? e.proseLower.indexOf(needle) : -1;
+    if (at < 0) return null;
+
+    // toLowerCase is not length-preserving in every script, and only then does the
+    // offset stop pointing at the same character in the original.
+    const src = e.prose.length === e.proseLower.length ? e.prose : e.proseLower;
+    const start = Math.max(0, at - SNIPPET_PAD);
+    const end = Math.min(src.length, at + needle.length + SNIPPET_PAD);
+
+    return {
+      before: (start > 0 ? "…" : "") + src.slice(start, at),
+      match: src.slice(at, at + needle.length),
+      after: src.slice(at + needle.length, end) + (end < src.length ? "…" : ""),
+    };
   }
 
   entry(id: string): Entry | undefined {
@@ -270,10 +332,16 @@ export function createHandler(deps: Deps = {}) {
               tickets: upper
                 ? index.ticketsFor(id).filter((t) => t.toUpperCase().startsWith(upper))
                 : [],
+              // Structured, never markup: this is transcript content on its way
+              // into innerHTML, and the page escapes each part separately.
+              snippet: kind === "text" ? index.snippet(id, q) : null,
             };
           })
           .sort((a, b) => (RANK[a.kind] - RANK[b.kind]) || (b.lastActive - a.lastActive));
-        return json({ query: q, results });
+        // Body text is the broad tier; a common word should not return the corpus.
+        let texts = 0;
+        const capped = results.filter((r) => r.kind !== "text" || ++texts <= TEXT_LIMIT);
+        return json({ query: q, results: capped });
       }
 
       const rowMatch = pathname.match(/^\/api\/rows\/(.+)$/);

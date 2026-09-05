@@ -112,10 +112,15 @@
 
   .tags { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
   .tag {
-    font-size: 11px; background: var(--bg); border: 1px solid var(--line);
-    border-radius: 3px; padding: 1px 6px; color: var(--dim); cursor: pointer;
+    font-size: 11px; border-radius: 3px; padding: 1px 6px; cursor: pointer;
+    background: var(--accent-soft); color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   }
-  .tag:hover { border-color: var(--accent); color: var(--accent); }
+  /* Hover is the delete affordance, matching the x on a ticket chip. */
+  .tag:hover {
+    background: var(--warn-soft); color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 42%, transparent);
+  }
 
   /* align-items:end so the star and buttons sit on the select's baseline,
      not floated up by the label stacked above it */
@@ -169,7 +174,10 @@
     background: var(--accent-soft); color: var(--accent);
     border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   }
-  .kind[data-kind=mention] { background: none; color: var(--faint); border-color: var(--line); }
+  .kind[data-kind=mention], .kind[data-kind=text] { background: none; color: var(--faint); border-color: var(--line); }
+
+  .snippet { margin-top: 5px; font-size: 12px; line-height: 1.45; color: var(--dim); }
+  .snippet mark { background: var(--accent-soft); color: var(--accent); border-radius: 2px; padding: 0 2px; }
 
   .empty { text-align: center; padding: 40px 20px; color: var(--dim); border: 1px dashed var(--line); border-radius: var(--radius); }
   .empty strong { display: block; color: var(--ink); font-weight: 560; margin-bottom: 5px; }
@@ -203,7 +211,7 @@
   <div id="jira-banner"></div>
 
   <div class="bar">
-    <input type="search" id="q" placeholder="Search every session on disk by ticket, e.g. PROJ-558" autocomplete="off">
+    <input type="search" id="q" placeholder="Search every session on disk by ticket or by what was said, e.g. PROJ-558" autocomplete="off">
     <button class="primary" id="add">+ Add session</button>
   </div>
 
@@ -230,8 +238,9 @@
 const PRIORITIES = ["Highest", "High", "Medium", "Low", "Lowest"];
 const ROLLUP = { none: "□", partial: "◑", all: "✓" };
 // How a search result matched. "mentioned" means the session merely discussed
-// the ticket, so it is ranked last and labelled to say so.
-const MATCH_LABEL = { id: "session id", ticket: "ticket", name: "title", mention: "mentioned" };
+// the ticket; "transcript" means it only said the words. Both rank below a real
+// match and are labelled to say so.
+const MATCH_LABEL = { id: "session id", ticket: "ticket", name: "title", mention: "mentioned", text: "transcript" };
 const $ = (sel) => document.querySelector(sel);
 
 let rows = [];
@@ -332,7 +341,7 @@ function render() {
     const { query, results } = searching;
     main.innerHTML = `<div class="group"><h2>Search &mdash; ${esc(query)}</h2>` + (
       results.length === 0
-        ? `<div class="empty"><strong>Nothing matches ${esc(query)}</strong>Searches session ids, titles, and ticket keys across every transcript on disk — tracked or not.</div>`
+        ? `<div class="empty"><strong>Nothing matches ${esc(query)}</strong>Searches session ids, titles, ticket keys, and what was said, across every transcript on disk — tracked or not.</div>`
         : results.map((r) => `<div class="row">
             <div class="rollup" data-state="none">&middot;</div>
             <div>
@@ -346,6 +355,7 @@ function render() {
                 <span>${ago(r.lastActive)}</span>
                 ${r.tracked ? `<span style="color:var(--accent)">tracked</span>` : `<span style="color:var(--faint)">not tracked</span>`}
               </div>
+              ${r.snippet ? `<div class="snippet">${esc(r.snippet.before)}<mark>${esc(r.snippet.match)}</mark>${esc(r.snippet.after)}</div>` : ""}
             </div>
             <div class="actions">
               ${r.tracked ? "" : `<button data-act="track" data-id="${r.id}">Track</button>`}

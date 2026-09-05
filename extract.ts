@@ -153,18 +153,71 @@ export async function extractSession(path: string): Promise<Extracted> {
 }
 
 /**
- * Every ticket mentioned anywhere in a transcript, for the search index.
+ * Per-session prose budget, guarding the heap against one runaway transcript.
  *
- * Reads the whole file, unlike extractSession. Measured 192ms over a 130MB corpus, which is
- * why this feeds a cached index rather than running per query.
+ * Sized from the corpus, not guessed: prose is 2.1% of raw bytes (152MB -> 3.2MB
+ * across 37 sessions) and the largest single session is 596KB. At 256KB this
+ * silently truncated the six longest sessions, which are the deep debugging ones
+ * search exists to find. 1MB clears the real maximum and still bounds the damage.
  */
-export async function extractAllTickets(path: string): Promise<Set<string>> {
-  try {
-    const text = await Bun.file(path).text();
-    return new Set(text.match(TICKET_ALL) ?? []);
-  } catch {
-    return new Set();
+const PROSE_CAP = 1024 * 1024;
+
+export interface FullScan {
+  /** Every ticket appearing anywhere in the transcript, including ones only discussed. */
+  mentions: Set<string>;
+  /** User and assistant prose, cleaned and concatenated. Tool output excluded. */
+  prose: string;
+}
+
+/**
+ * The searchable prose of a transcript: what was said, not what was run.
+ *
+ * textOfMessage already keeps only `text` blocks, so tool_use and tool_result
+ * fall away on their own — which is the point. Tool output and file dumps are
+ * the bulk of the corpus, and matching them finds the file rather than the
+ * session. isNoise drops the harness boilerplate that would otherwise appear in
+ * every transcript and match every query.
+ */
+export function proseFromText(text: string): string {
+  const parts: string[] = [];
+  let length = 0;
+
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (rec.type !== "user" && rec.type !== "assistant") continue;
+
+    const said = clean(textOfMessage(rec.message));
+    if (!said || isNoise(said)) continue;
+
+    parts.push(said);
+    length += said.length + 1;
+    if (length >= PROSE_CAP) break;
   }
+
+  return parts.join("\n").slice(0, PROSE_CAP);
+}
+
+/**
+ * One full read, feeding both the mention set and the full-text index.
+ *
+ * Reads the whole file, unlike extractSession. Measured 664ms over a 152MB corpus, which is
+ * why this feeds a cached index rather than running per query. Mentions come from the raw
+ * bytes, since a ticket key means something wherever it appears; prose does not.
+ */
+export async function scanFull(path: string): Promise<FullScan> {
+  let text: string;
+  try {
+    text = await Bun.file(path).text();
+  } catch {
+    return { mentions: new Set(), prose: "" };
+  }
+  return { mentions: new Set(text.match(TICKET_ALL) ?? []), prose: proseFromText(text) };
 }
 
 /** Exposed so the UI and tests agree on what a valid ticket key looks like. */
