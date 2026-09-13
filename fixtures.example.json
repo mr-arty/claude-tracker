@@ -1,14 +1,22 @@
 {
   "_comment": "Copy to fixtures.local.json and fill in with your own sessions. That file is gitignored so real ticket keys never enter git. Generate a starting point with: bun run fixtures.ts",
-
   "_mustMatch": "Session id prefix -> the ticket the extractor must return. Pick sessions where you know the answer, ideally a mix: some where the ticket is in the aiTitle, at least one where it is only in your opening message.",
   "mustMatch": {
     "cafe0001": "PROJ-101",
     "cafe0002": "PROJ-102"
   },
-
   "_mustNotMatch": "Session id prefix -> why it must return null. The important half. Pick chore and incident sessions whose bytes mention a ticket somewhere but which are not about that ticket. These catch an implementation that regexes raw JSONL and picks up the stale slug field.",
   "mustNotMatch": {
     "cafe0003": "git chore; a stale slug field names a ticket the session never worked on"
+  },
+  "_agentNames": "Session id prefix -> the canonical name Claude Code carries for it, WITHOUT the @. Read from the last agent-name record in the transcript, so a session renamed mid-run must list its current name.",
+  "agentNames": {
+    "cafe0001": "api-worker"
+  },
+  "_prs": "Session id prefix -> every pull request url opened during it. Read from the transcript's own pr-link records and deduped, so a session that reopened the same PR every turn still lists it once.",
+  "prs": {
+    "cafe0001": [
+      "https://github.com/owner/repo/pull/12"
+    ]
   }
 }

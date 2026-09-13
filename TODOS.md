@@ -3,37 +3,41 @@
 Deferred work for claude-tracker. Captured during `/plan-eng-review` on 2026-08-22.
 Each item records why it was deferred, not just what it is.
 
----
-
-## Real Jira API integration
-
-**What:** Pull ticket titles, live status, and assignee from Jira instead of
-showing a bare key and a hyperlink.
-
-**Why:** Premise 5 of the design doc defers this deliberately. More importantly,
-the D12 decision to use five-level Jira-style priority was made **specifically so
-the values map 1:1 if this lands**. That intent is invisible in the code and will
-look like an arbitrary over-specified enum in three months without this note.
-
-**Pros:** `PROJ-346` stops being an opaque string and becomes "Trivy scan gate,
-In Progress, assigned to you". Closes the Jira cross-reference properly rather
-than partially — the stated primary pain of the whole project.
-
-**Cons:** Introduces the first network call, the first secret (API token), and
-the first set of network failure states into a tool that currently has none of
-those. Token storage on a local single-user tool is a small problem but a real
-one, and Jira being slow or down becomes a UI state to handle.
-
-**Context:** v1 uses `JIRA_BASE` as a named placeholder constant at the top of
-`server.ts` (D11). Whoever picks this up starts there. The five priority levels
-in `annotations.json` are already Jira-shaped, so no data migration is needed.
-
-**Depends on / blocked by:** Nothing technical. Needs a Jira API token and a
-decision on where to store it.
+**Nothing is open.** Everything below has landed. New items go above the Resolved
+heading, with the reason for deferring, not just the description.
 
 ---
 
 ## Resolved
+
+**Real Jira API integration** — landed 2026-09-13. Ticket chips carry the Jira
+summary, status and assignee. Credentials come from `CT_JIRA_EMAIL` /
+`CT_JIRA_TOKEN` or `~/.claude-tracker/credentials.json`, never from the repo; the
+REST root is derived from `CT_JIRA_BASE` rather than configured twice. The D12
+five-level priority mapped 1:1 as intended, so no migration was needed. The
+network-failure worry in the original note was answered by never letting it reach
+the page: enrichment runs after render, `/api/tickets` never 5xxs, and Jira down
+leaves the page byte-for-byte what it was. One trap found the hard way — Jira
+Cloud answers **404, not 401**, for an issue request with a bad token, so a wrong
+credential looked exactly like a deleted ticket. `/rest/api/3/myself` does answer
+401 and is called once when every key comes back missing.
+
+**Second tab for PRs** — landed 2026-09-13. No GitHub call was needed: Claude Code
+already writes `{"type":"pr-link",prNumber,prRepository,prUrl,timestamp}` into the
+transcript. 3170 records locally for 87 real PRs, so they are deduped by url with
+the earliest timestamp kept as when the PR opened.
+
+**Session name on each block** — landed 2026-09-13. Also already on disk, as
+`{"type":"agent-name","agentName":"…"}`. The `@` is Claude Code's display prefix
+and is not stored. **Last record wins**, unlike the first-wins `aiTitle` rule:
+three local sessions were renamed mid-run.
+
+Both of those records routinely sit past the 512KB `PROBE_BYTES` that
+`extractSession` uses — 22 of 23 sessions with PRs, 15 of 24 named ones, one at
+7.7MB — so neither can be read from a probe. Both are harvested in `scanFull`,
+which already reads every byte for the search index; the two extra passes cost
+222ms across a 196MB corpus. Each guards the parse with a cheap substring test,
+which is what keeps that number small.
 
 **Full-text transcript search** — landed 2026-09-05. Prose only, not tool output:
 that is 2% of the bytes and the reason a plain scan beat an inverted index. The

@@ -162,11 +162,24 @@ export async function extractSession(path: string): Promise<Extracted> {
  */
 const PROSE_CAP = 1024 * 1024;
 
+export interface PrRef {
+  number: number;
+  /** "OWNER/REPO", exactly as the transcript records it. */
+  repository: string;
+  url: string;
+  /** ISO. The earliest timestamp seen for this url, i.e. when the PR was opened. */
+  firstSeen: string;
+}
+
 export interface FullScan {
   /** Every ticket appearing anywhere in the transcript, including ones only discussed. */
   mentions: Set<string>;
   /** User and assistant prose, cleaned and concatenated. Tool output excluded. */
   prose: string;
+  /** The name Claude Code carries for this session, without the display @. */
+  agentName: string | null;
+  /** Pull requests opened during the session, deduped. */
+  prs: PrRef[];
 }
 
 /**
@@ -204,20 +217,98 @@ export function proseFromText(text: string): string {
 }
 
 /**
- * One full read, feeding both the mention set and the full-text index.
+ * The session name Claude Code carries, e.g. "oke-traefik-gitops-e2e-test".
  *
- * Reads the whole file, unlike extractSession. Measured 664ms over a 152MB corpus, which is
- * why this feeds a cached index rather than running per query. Mentions come from the raw
- * bytes, since a ticket key means something wherever it appears; prose does not.
+ * LAST record wins, the opposite of the aiTitle rule above. Sessions get renamed
+ * mid-run and the record is rewritten each time; three local transcripts carry
+ * two or three distinct names. The @ in the displayed "@name" is Claude Code's
+ * addressing prefix and is never part of the stored value.
+ */
+export function agentNameFromText(text: string): string | null {
+  let name: string | null = null;
+
+  for (const line of text.split("\n")) {
+    // Cheap reject before the parse. These records are a handful of lines in a
+    // file that is mostly tool output, so parsing every line would dominate.
+    if (!line.includes('"agent-name"')) continue;
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (rec.type !== "agent-name") continue;
+    const value = typeof rec.agentName === "string" ? rec.agentName.trim() : "";
+    if (value) name = value;
+  }
+
+  return name;
+}
+
+/**
+ * Pull requests opened during the session, from the transcript's own pr-link
+ * records. No network call and no gh: the data is already on disk.
+ *
+ * The records repeat every turn — 3170 of them locally for 87 distinct PRs — so
+ * dedupe by url and keep the EARLIEST timestamp, which is when the PR appeared.
+ */
+export function prsFromText(text: string): PrRef[] {
+  const byUrl = new Map<string, PrRef>();
+
+  for (const line of text.split("\n")) {
+    if (!line.includes('"pr-link"')) continue;
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (rec.type !== "pr-link") continue;
+
+    const url = typeof rec.prUrl === "string" ? rec.prUrl.trim() : "";
+    const repository = typeof rec.prRepository === "string" ? rec.prRepository.trim() : "";
+    const number = typeof rec.prNumber === "number" ? rec.prNumber : NaN;
+    if (!url || !repository || !Number.isFinite(number)) continue;
+
+    const firstSeen = typeof rec.timestamp === "string" ? rec.timestamp : "";
+    const seen = byUrl.get(url);
+    if (!seen) {
+      byUrl.set(url, { number, repository, url, firstSeen });
+    } else if (firstSeen && (!seen.firstSeen || firstSeen < seen.firstSeen)) {
+      seen.firstSeen = firstSeen;
+    }
+  }
+
+  return [...byUrl.values()].sort((a, b) => b.firstSeen.localeCompare(a.firstSeen));
+}
+
+/**
+ * One full read, feeding the mention set, the full-text index, the session name
+ * and the PR list.
+ *
+ * Reads the whole file, unlike extractSession. Mentions come from the raw bytes,
+ * since a ticket key means something wherever it appears; prose does not.
+ *
+ * The name and PR passes are separate loops rather than folded into
+ * proseFromText, because that one stops at PROSE_CAP and both records routinely
+ * sit past it: 15 of 24 named sessions record their name beyond 512KB, one at
+ * 7.7MB. The substring guard before each parse keeps the two extra passes at
+ * ~220ms across a 195MB corpus, which is why this feeds a cached index rather
+ * than running per query.
  */
 export async function scanFull(path: string): Promise<FullScan> {
   let text: string;
   try {
     text = await Bun.file(path).text();
   } catch {
-    return { mentions: new Set(), prose: "" };
+    return { mentions: new Set(), prose: "", agentName: null, prs: [] };
   }
-  return { mentions: new Set(text.match(TICKET_ALL) ?? []), prose: proseFromText(text) };
+  return {
+    mentions: new Set(text.match(TICKET_ALL) ?? []),
+    prose: proseFromText(text),
+    agentName: agentNameFromText(text),
+    prs: prsFromText(text),
+  };
 }
 
 /** Exposed so the UI and tests agree on what a valid ticket key looks like. */

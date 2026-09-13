@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pull requests &mdash; claude-tracker</title>
+<link rel="stylesheet" href="/tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 28px 22px 80px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  h1 { font-size: 17px; font-weight: 620; margin: 0; letter-spacing: -0.01em; }
+  .count { color: var(--faint); font-size: 13px; }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 22px; }
+  .sub code { font-family: var(--mono); font-size: 12px; }
+  .agent-name { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+
+  .group { margin-bottom: 26px; }
+  .group > h2 {
+    font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--faint); margin: 0 0 8px; font-family: var(--mono);
+  }
+
+  .row {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 11px 13px; margin-bottom: 7px;
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  .num {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    color: var(--pr); text-decoration: none; border-bottom: 1px dotted var(--faint);
+  }
+  .num:hover { filter: brightness(1.1); }
+  .repo { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .when { color: var(--faint); font-size: 12px; margin-left: auto; }
+  .url { flex-basis: 100%; font-family: var(--mono); font-size: 11.5px; color: var(--faint); word-break: break-all; }
+
+  .empty { text-align: center; padding: 40px 20px; color: var(--dim); border: 1px dashed var(--line); border-radius: var(--radius); }
+  .empty strong { display: block; color: var(--ink); font-weight: 560; margin-bottom: 5px; }
+  .empty code { font-family: var(--mono); font-size: 12px; }
+
+  footer {
+    margin-top: 44px; padding-top: 14px; border-top: 1px solid var(--line);
+    color: var(--faint); font-size: 12px; font-family: var(--mono);
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="title">Pull requests</h1>
+    <span class="count" id="count"></span>
+  </header>
+  <p class="sub" id="sub"></p>
+
+  <div id="main"></div>
+
+  <footer>
+    <span id="version"></span>
+    <a href="/">&larr; back to claude-tracker</a>
+  </footer>
+</div>
+
+<script type="module">
+const $ = (sel) => document.querySelector(sel);
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+function ago(ms) {
+  if (!ms) return "";
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)}h ago`;
+  return `${Math.round(mins / 1440)}d ago`;
+}
+
+/** firstSeen is an ISO string from the transcript, not a millisecond stamp. */
+const agoIso = (iso) => (iso ? ago(Date.parse(iso)) : "");
+
+// The page is served at /prs/<id>, so it already knows which session it is about
+// and never has to be told.
+const id = location.pathname.split("/").pop();
+
+const prRow = (p) => `<div class="row">
+  <a class="num" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">#${esc(p.number)}</a>
+  <span class="repo">${esc(p.repository)}</span>
+  <span class="when">opened ${esc(agoIso(p.firstSeen))}</span>
+  <span class="url">${esc(p.url)}</span>
+</div>`;
+
+async function load() {
+  const [cfg, body] = await Promise.all([
+    fetch("/api/config").then((r) => r.json()).catch(() => ({})),
+    fetch(`/api/prs/${id}`).then(async (r) => (r.ok ? r.json() : Promise.reject(await r.json()))),
+  ]).catch((err) => [{}, { error: err?.error ?? String(err) }]);
+
+  $("#version").textContent = `Version: ${cfg.version ?? "unknown"}`;
+
+  if (body.error) {
+    $("#sub").textContent = "";
+    $("#main").innerHTML =
+      `<div class="empty"><strong>${esc(body.error)}</strong>The transcript for <code>${esc(id)}</code> is no longer in <code>~/.claude/projects</code>.</div>`;
+    return;
+  }
+
+  document.title = `Pull requests — ${body.name ?? id.slice(0, 8)}`;
+  $("#title").textContent = body.name || "Untitled session";
+  $("#count").textContent = body.prs.length ? `${body.prs.length} pull request${body.prs.length === 1 ? "" : "s"}` : "";
+  $("#sub").innerHTML = [
+    body.agentName ? `<span class="agent-name">@${esc(body.agentName)}</span>` : "",
+    `<code>${esc(id)}</code>`,
+    esc(body.projectName ?? ""),
+    esc(ago(body.lastActive)),
+  ].filter(Boolean).join(" &middot; ");
+
+  if (body.prs.length === 0) {
+    $("#main").innerHTML =
+      `<div class="empty"><strong>No pull requests from this session</strong>They are read from the transcript's own records, so a PR opened outside Claude Code will not appear here.</div>`;
+    return;
+  }
+
+  // Grouped only when it earns the heading: most sessions touch one repository.
+  const byRepo = new Map();
+  for (const p of body.prs) byRepo.set(p.repository, [...(byRepo.get(p.repository) ?? []), p]);
+
+  $("#main").innerHTML = byRepo.size === 1
+    ? body.prs.map(prRow).join("")
+    : [...byRepo].map(([repo, list]) =>
+        `<div class="group"><h2>${esc(repo)}</h2>${list.map(prRow).join("")}</div>`).join("");
+}
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+/*
+ * Shared by index.html and prs.html. One file, because every fill colour ships a
+ * paired --on-* ink token whose AA contrast was computed, not eyeballed, and two
+ * copies of that table would drift.
+ */
+:root {
+  --bg: #fbfbfa;      --panel: #fff;     --line: #e4e2dd;
+  --ink: #1b1a17;     --dim: #6f6b63;    --faint: #9a958c;
+  --accent: #2f6f4f;  --accent-soft: #eaf3ee;
+  --warn: #a4472c;    --warn-soft: #fbeee9;
+  --star: #c8891a;
+  /* Resume is a lighter green than --accent (L 0.174 vs 0.125) so the primary
+     Add-session button stays the loudest thing on the page. Copy ID is a soft
+     peach with dark ink: light orange cannot carry white text at AA. PRs is a
+     slate blue, the one hue not already spoken for. Ratios: resume 4.69:1,
+     copy 10.61:1, pr 5.24:1. */
+  --on-accent: #ffffff;
+  --resume: #41805e;  --on-resume: #ffffff;
+  --copy:   #e8c49b;  --on-copy:   #1b1a17;
+  --pr:     #3f6ea8;  --on-pr:     #ffffff;
+  --radius: 6px;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;    --panel: #1d1d22;  --line: #2e2e36;
+    --ink: #e8e6e1;   --dim: #9b968d;    --faint: #6d6860;
+    --accent: #6bbd90; --accent-soft: #1c2b23;
+    --warn: #e08b6d;  --warn-soft: #2d1f1a;
+    --star: #e0aa47;
+    /* Dark-mode fills are the light ones, so the ink flips to near-black.
+       White on this --accent is 2.26:1. Ratios: pr 7.30:1. */
+    --on-accent: #16161a;
+    --resume: #5fb489;  --on-resume: #16161a;
+    --copy:   #bf8a52;  --on-copy:   #16161a;
+    --pr:     #7fa8d8;  --on-pr:     #16161a;
+  }
+}

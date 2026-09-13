@@ -16,7 +16,16 @@
 
 import { describe, expect, test, beforeAll } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { extractFromText, extractSession, proseFromText, isTicketKey, TICKET_PREFIXES } from "./extract.ts";
+import {
+  extractFromText,
+  extractSession,
+  proseFromText,
+  agentNameFromText,
+  prsFromText,
+  scanFull,
+  isTicketKey,
+  TICKET_PREFIXES,
+} from "./extract.ts";
 import { scanSessions, type SessionMeta } from "./scan.ts";
 
 interface Fixtures {
@@ -24,6 +33,10 @@ interface Fixtures {
   mustMatch: Record<string, string>;
   /** session id prefix -> why it must return null */
   mustNotMatch: Record<string, string>;
+  /** session id prefix -> the canonical name Claude carries for it */
+  agentNames: Record<string, string>;
+  /** session id prefix -> pull request urls opened in it */
+  prs: Record<string, string[]>;
 }
 
 // Resolved synchronously at module load so describe.skipIf can see it. An async
@@ -32,7 +45,7 @@ interface Fixtures {
 const FIXTURE_PATH = new URL("./fixtures.local.json", import.meta.url).pathname;
 const HAS_FIXTURES = existsSync(FIXTURE_PATH);
 
-let fixtures: Fixtures = { mustMatch: {}, mustNotMatch: {} };
+let fixtures: Fixtures = { mustMatch: {}, mustNotMatch: {}, agentNames: {}, prs: {} };
 let sessions: SessionMeta[] = [];
 const find = (prefix: string) => sessions.find((s) => s.id.startsWith(prefix));
 
@@ -47,7 +60,12 @@ if (!HAS_FIXTURES) {
 beforeAll(async () => {
   if (!HAS_FIXTURES) return;
   const raw = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as Partial<Fixtures>;
-  fixtures = { mustMatch: raw.mustMatch ?? {}, mustNotMatch: raw.mustNotMatch ?? {} };
+  fixtures = {
+    mustMatch: raw.mustMatch ?? {},
+    mustNotMatch: raw.mustNotMatch ?? {},
+    agentNames: raw.agentNames ?? {},
+    prs: raw.prs ?? {},
+  };
   sessions = await scanSessions();
 });
 
@@ -246,6 +264,153 @@ describe("proseFromText", () => {
   });
 });
 
+describe("agentNameFromText", () => {
+  const jsonl = (...records: unknown[]) => records.map((r) => JSON.stringify(r)).join("\n");
+
+  test("returns the name Claude carries, without an @", () => {
+    const text = jsonl({ type: "agent-name", agentName: "api-worker" });
+    expect(agentNameFromText(text)).toBe("api-worker");
+  });
+
+  test("the LAST name wins, because sessions get renamed mid-run", () => {
+    // Three local transcripts do exactly this. Taking the first would report a
+    // name the session no longer answers to.
+    const text = jsonl(
+      { type: "agent-name", agentName: "first-name" },
+      { type: "user", message: { content: "work happens" } },
+      { type: "agent-name", agentName: "second-name" },
+      { type: "agent-name", agentName: "third-name" },
+    );
+    expect(agentNameFromText(text)).toBe("third-name");
+  });
+
+  test("a session with no agent-name record has no name", () => {
+    expect(agentNameFromText(jsonl({ type: "ai-title", aiTitle: "Some summary" }))).toBeNull();
+  });
+
+  test("an empty or whitespace name is no name, not an empty string", () => {
+    expect(agentNameFromText(jsonl({ type: "agent-name", agentName: "   " }))).toBeNull();
+    expect(agentNameFromText(jsonl({ type: "agent-name", agentName: "" }))).toBeNull();
+  });
+
+  test("a non-string name is ignored", () => {
+    expect(agentNameFromText(jsonl({ type: "agent-name", agentName: 42 }))).toBeNull();
+  });
+
+  test("an earlier real name survives a later malformed one", () => {
+    const text = jsonl({ type: "agent-name", agentName: "real" }, { type: "agent-name" });
+    expect(agentNameFromText(text)).toBe("real");
+  });
+
+  test("unparseable and truncated lines are skipped, not fatal", () => {
+    const text = `{ not json\n${JSON.stringify({ type: "agent-name", agentName: "survives" })}\n{"type":"agent-name",`;
+    expect(agentNameFromText(text)).toBe("survives");
+  });
+
+  test("a name recorded past the prose cap is still found", () => {
+    // The direct regression guard for folding this into proseFromText, which
+    // stops at PROSE_CAP. 15 of 24 named sessions record the name beyond 512KB.
+    const filler = Array.from({ length: 400 }, (_, i) =>
+      JSON.stringify({ type: "user", message: { content: `padding line ${i} `.repeat(200) } }),
+    ).join("\n");
+    const text = `${filler}\n${JSON.stringify({ type: "agent-name", agentName: "late-name" })}`;
+    expect(text.length).toBeGreaterThan(1024 * 1024);
+    expect(agentNameFromText(text)).toBe("late-name");
+  });
+});
+
+describe("prsFromText", () => {
+  const jsonl = (...records: unknown[]) => records.map((r) => JSON.stringify(r)).join("\n");
+  const prLink = (n: number, timestamp: string, repository = "owner/repo") => ({
+    type: "pr-link",
+    prNumber: n,
+    prRepository: repository,
+    prUrl: `https://github.com/${repository}/pull/${n}`,
+    timestamp,
+  });
+
+  test("reads a pull request out of the transcript's own record", () => {
+    expect(prsFromText(jsonl(prLink(7, "2026-09-01T10:00:00.000Z")))).toEqual([
+      {
+        number: 7,
+        repository: "owner/repo",
+        url: "https://github.com/owner/repo/pull/7",
+        firstSeen: "2026-09-01T10:00:00.000Z",
+      },
+    ]);
+  });
+
+  test("repeats are deduped by url and keep the EARLIEST timestamp", () => {
+    // The record is rewritten every turn: 3170 of them locally for 87 real PRs.
+    // The first sighting is when the PR was opened, which is the useful one.
+    const text = jsonl(
+      prLink(7, "2026-09-01T12:00:00.000Z"),
+      prLink(7, "2026-09-01T10:00:00.000Z"),
+      prLink(7, "2026-09-02T09:00:00.000Z"),
+    );
+    const prs = prsFromText(text);
+    expect(prs).toHaveLength(1);
+    expect(prs[0]!.firstSeen).toBe("2026-09-01T10:00:00.000Z");
+  });
+
+  test("several pull requests come back newest first", () => {
+    const text = jsonl(
+      prLink(1, "2026-09-01T10:00:00.000Z"),
+      prLink(3, "2026-09-03T10:00:00.000Z"),
+      prLink(2, "2026-09-02T10:00:00.000Z"),
+    );
+    expect(prsFromText(text).map((p) => p.number)).toEqual([3, 2, 1]);
+  });
+
+  test("pull requests across repositories are all kept", () => {
+    const text = jsonl(
+      prLink(1, "2026-09-01T10:00:00.000Z", "owner/one"),
+      prLink(1, "2026-09-02T10:00:00.000Z", "owner/two"),
+    );
+    expect(prsFromText(text).map((p) => p.repository)).toEqual(["owner/two", "owner/one"]);
+  });
+
+  test("a record missing a url, repository or number is skipped", () => {
+    const text = jsonl(
+      { type: "pr-link", prNumber: 1, prRepository: "owner/repo" },
+      { type: "pr-link", prNumber: 2, prUrl: "https://github.com/owner/repo/pull/2" },
+      { type: "pr-link", prRepository: "owner/repo", prUrl: "https://github.com/owner/repo/pull/3" },
+      prLink(4, "2026-09-01T10:00:00.000Z"),
+    );
+    expect(prsFromText(text).map((p) => p.number)).toEqual([4]);
+  });
+
+  test("unparseable and truncated lines are skipped, not fatal", () => {
+    const text = `{ not json\n${JSON.stringify(prLink(9, "2026-09-01T10:00:00.000Z"))}\n{"type":"pr-link",`;
+    expect(prsFromText(text).map((p) => p.number)).toEqual([9]);
+  });
+
+  test("a session that opened nothing yields an empty list", () => {
+    expect(prsFromText(jsonl({ type: "user", message: { content: "no pull requests here" } }))).toEqual([]);
+  });
+
+  test("a pull request recorded past the prose cap is still found", () => {
+    // 22 of 23 sessions with PRs record the first one beyond 512KB.
+    const filler = Array.from({ length: 400 }, (_, i) =>
+      JSON.stringify({ type: "user", message: { content: `padding line ${i} `.repeat(200) } }),
+    ).join("\n");
+    const text = `${filler}\n${JSON.stringify(prLink(99, "2026-09-01T10:00:00.000Z"))}`;
+    expect(text.length).toBeGreaterThan(1024 * 1024);
+    expect(prsFromText(text).map((p) => p.number)).toEqual([99]);
+  });
+});
+
+describe("scanFull", () => {
+  test("an unreadable file yields an empty scan rather than throwing", async () => {
+    expect(await scanFull("/does/not/exist.jsonl")).toEqual({
+      mentions: new Set(),
+      prose: "",
+      agentName: null,
+      prs: [],
+    });
+  });
+});
+
 describe.skipIf(!HAS_FIXTURES)("parity against real transcripts", () => {
   test("the corpus is present, otherwise every assertion below is vacuous", () => {
     expect(sessions.length).toBeGreaterThan(0);
@@ -286,5 +451,54 @@ describe.skipIf(!HAS_FIXTURES)("parity against real transcripts", () => {
     }
     // A handful of aborted sessions legitimately have neither.
     expect(nameless).toBeLessThanOrEqual(Math.ceil(sessions.length * 0.3));
+  });
+
+  test("every fixture session still carries the name Claude gave it", async () => {
+    const wrong: string[] = [];
+    for (const [prefix, expected] of Object.entries(fixtures.agentNames)) {
+      const session = find(prefix);
+      if (!session) continue;
+      const { agentName } = await scanFull(session.path);
+      if (agentName !== expected) wrong.push(`${prefix}: expected ${expected}, got ${agentName}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  test("no canonical name arrives with an @ already on it", async () => {
+    // The @ is Claude Code's display prefix, not part of the value. If that ever
+    // changes, the page would render "@@name" and nothing else would complain.
+    const prefixed: string[] = [];
+    for (const s of sessions) {
+      const { agentName } = await scanFull(s.path);
+      if (agentName?.startsWith("@")) prefixed.push(`${s.id.slice(0, 8)}: ${agentName}`);
+    }
+    expect(prefixed).toEqual([]);
+  });
+
+  test("every fixture session still lists the pull requests it opened", async () => {
+    const wrong: string[] = [];
+    for (const [prefix, expected] of Object.entries(fixtures.prs)) {
+      const session = find(prefix);
+      if (!session) continue;
+      const { prs } = await scanFull(session.path);
+      const got = prs.map((p) => p.url).sort();
+      const want = [...expected].sort();
+      if (got.join() !== want.join()) wrong.push(`${prefix}: expected ${want.join(", ")}, got ${got.join(", ")}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  test("pull requests are deduped across the real corpus, not just in the unit tests", async () => {
+    const offenders: string[] = [];
+    let total = 0;
+    for (const s of sessions) {
+      const { prs } = await scanFull(s.path);
+      total += prs.length;
+      if (new Set(prs.map((p) => p.url)).size !== prs.length) offenders.push(s.id.slice(0, 8));
+    }
+    expect(offenders).toEqual([]);
+    // The records repeat thousands of times; a dedupe that silently stopped
+    // working would show up here as an implausible count, not as a wrong url.
+    expect(total).toBeLessThan(sessions.length * 40);
   });
 });
