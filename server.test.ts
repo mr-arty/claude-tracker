@@ -21,13 +21,23 @@ const made: string[] = [];
 
 const jsonl = (...records: unknown[]) => records.map((r) => JSON.stringify(r)).join("\n") + "\n";
 
+const prLink = (n: number, timestamp: string) => ({
+  type: "pr-link",
+  prNumber: n,
+  prRepository: "owner/example-service",
+  prUrl: `https://github.com/owner/example-service/pull/${n}`,
+  timestamp,
+});
+
 const spy: SpawnFn = (argv) => {
   if (spawnFails) throw new Error('Executable not found in $PATH: "x-terminal-emulator"');
   spawned.push(argv);
 };
 
+// jiraAuth is pinned to null rather than left to load(): a test whose result
+// depends on whether the developer has CT_JIRA_TOKEN exported is worse than none.
 function handler() {
-  return createHandler({ root, annotationsPath, spawn: spy });
+  return createHandler({ root, annotationsPath, spawn: spy, jiraAuth: null });
 }
 const GET = (p: string) => new Request(`http://localhost${p}`);
 const PUT = (p: string, body: unknown) =>
@@ -51,6 +61,11 @@ beforeEach(async () => {
       { type: "user", cwd: "/home/dev/work/example-service", message: { content: "hello" } },
       { aiTitle: `Implement ${key(405)} Jira ticket` },
       { type: "assistant", message: { content: `also mentions ${key(406)} and ${key(549)}` } },
+      { type: "agent-name", agentName: "renamed-later" },
+      { type: "agent-name", agentName: "example-worker" },
+      prLink(12, "2026-09-01T10:00:00.000Z"),
+      prLink(12, "2026-09-01T18:00:00.000Z"),
+      prLink(34, "2026-09-02T10:00:00.000Z"),
     ),
   );
   await writeFile(
@@ -67,9 +82,259 @@ afterAll(async () => {
   for (const d of made) await rm(d, { recursive: true, force: true });
 });
 
+describe("session name and pull requests, both derived from the transcript", () => {
+  test("a tracked row carries the canonical name and a pull request count", async () => {
+    const h = handler();
+    await h(PUT(`/api/rows/${A}`, {}));
+    const { rows } = await (await h(GET("/api/rows"))).json();
+    // The last agent-name record wins: the session was renamed mid-run.
+    expect(rows[0]).toMatchObject({ id: A, agentName: "example-worker", prCount: 2 });
+  });
+
+  test("a session that recorded neither reports null and zero, not a placeholder", async () => {
+    const h = handler();
+    await h(PUT(`/api/rows/${B}`, {}));
+    const { rows } = await (await h(GET("/api/rows"))).json();
+    expect(rows[0]).toMatchObject({ id: B, agentName: null, prCount: 0 });
+  });
+
+  test("agentName cannot be persisted by a client, only derived", async () => {
+    // normalise() drops unknown keys, so a PUT of a derived field is inert. If
+    // that ever stopped being true, a stale tab could overwrite the truth.
+    const h = handler();
+    const saved = await (await h(PUT(`/api/rows/${A}`, { agentName: "spoofed", prCount: 99 }))).json();
+    expect(saved).toMatchObject({ agentName: "example-worker", prCount: 2 });
+
+    const store = JSON.parse(await Bun.file(annotationsPath).text());
+    expect(store[A].agentName).toBeUndefined();
+    expect(store[A].prCount).toBeUndefined();
+  });
+
+  test("untracked candidates carry the name too, so you can tell them apart", async () => {
+    const { sessions } = await (await handler()(GET("/api/untracked"))).json();
+    expect(sessions.find((s: { id: string }) => s.id === A)).toMatchObject({
+      agentName: "example-worker",
+      prCount: 2,
+    });
+  });
+
+  test("search results carry the name too", async () => {
+    const { results } = await (await handler()(GET(`/api/search?q=${A.slice(0, 8)}`))).json();
+    expect(results[0]).toMatchObject({ id: A, agentName: "example-worker", prCount: 2 });
+  });
+});
+
+describe("GET /api/prs/:id", () => {
+  test("lists the pull requests opened in the session, deduped, newest first", async () => {
+    const body = await (await handler()(GET(`/api/prs/${A}`))).json();
+    expect(body).toMatchObject({ id: A, agentName: "example-worker", projectName: "example-service" });
+    expect(body.prs).toEqual([
+      {
+        number: 34,
+        repository: "owner/example-service",
+        url: "https://github.com/owner/example-service/pull/34",
+        firstSeen: "2026-09-02T10:00:00.000Z",
+      },
+      {
+        number: 12,
+        repository: "owner/example-service",
+        // The record repeats every turn; the first sighting is when it opened.
+        url: "https://github.com/owner/example-service/pull/12",
+        firstSeen: "2026-09-01T10:00:00.000Z",
+      },
+    ]);
+  });
+
+  test("a session that opened none returns an empty list, not a 404", async () => {
+    const res = await handler()(GET(`/api/prs/${B}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).prs).toEqual([]);
+  });
+
+  test.each([["not-a-uuid"], ["../../etc/passwd"], [`${A} ; rm -rf /`]])(
+    "refuses %s",
+    async (id) => {
+      const res = await handler()(GET(`/api/prs/${encodeURIComponent(id)}`));
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(await res.json()).not.toHaveProperty("prs");
+    },
+  );
+
+  test("a session no longer on disk is a 404, not an empty list", async () => {
+    const res = await handler()(GET(`/api/prs/${GONE}`));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: "session not on disk", id: GONE });
+  });
+});
+
+describe("GET /prs/:id", () => {
+  test("serves the page for a real session id", async () => {
+    const res = await handler()(GET(`/prs/${A}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
+  test("a bad id never reaches a tab", async () => {
+    expect((await handler()(GET("/prs/not-a-uuid"))).status).toBe(404);
+  });
+
+  test("the shared token sheet is served as CSS", async () => {
+    const res = await handler()(GET("/tokens.css"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/css");
+  });
+});
+
+/**
+ * Jira is the only network call in the tool. Every test here injects the fetch,
+ * so the suite never leaves the machine, and every one of them asserts the same
+ * property from a different angle: a Jira problem is never the page's problem.
+ */
+describe("GET /api/tickets", () => {
+  const AUTH = { email: "dev@example.com", token: "secret-token" };
+  const BASE = "https://example.atlassian.net/browse";
+
+  const issue = (summary: string, status: string, category: string, assignee: string | null) =>
+    new Response(
+      JSON.stringify({
+        fields: {
+          summary,
+          status: { name: status, statusCategory: { key: category } },
+          assignee: assignee ? { displayName: assignee } : null,
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  let calls: string[];
+  const stub = (reply: (url: string) => Response | Promise<Response>): typeof fetch =>
+    (async (input: RequestInfo | URL) => {
+      const u = String(input);
+      calls.push(u);
+      return reply(u);
+    }) as typeof fetch;
+
+  const jiraHandler = (fetchImpl: typeof fetch, auth: typeof AUTH | null = AUTH) =>
+    createHandler({ root, annotationsPath, spawn: spy, jiraBase: BASE, jiraAuth: auth, jiraFetch: fetchImpl });
+
+  beforeEach(() => {
+    calls = [];
+  });
+
+  test("returns summary, status and assignee for the keys asked for", async () => {
+    const h = jiraHandler(stub(() => issue("Trivy scan gate", "In Progress", "indeterminate", "Dev Eloper")));
+    const body = await (await h(GET(`/api/tickets?keys=${key(405)}`))).json();
+    expect(body).toMatchObject({ configured: true, error: null });
+    expect(body.tickets[key(405)]).toEqual({
+      summary: "Trivy scan gate",
+      status: "In Progress",
+      statusCategory: "indeterminate",
+      assignee: "Dev Eloper",
+    });
+  });
+
+  test("the REST path is derived from the browse url, not configured twice", async () => {
+    const h = jiraHandler(stub(() => issue("x", "To Do", "new", null)));
+    await h(GET(`/api/tickets?keys=${key(405)}`));
+    expect(calls[0]).toBe(`https://example.atlassian.net/rest/api/3/issue/${key(405)}?fields=summary,status,assignee`);
+  });
+
+  test("the token is sent as Basic auth and never echoed back", async () => {
+    let sentAuth: string | null = null;
+    const h = jiraHandler((async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sentAuth = new Headers(init?.headers).get("authorization");
+      return issue("x", "Done", "done", null);
+    }) as typeof fetch);
+    const res = await h(GET(`/api/tickets?keys=${key(405)}`));
+    const text = await res.text();
+    expect(sentAuth).toBe(`Basic ${Buffer.from("dev@example.com:secret-token").toString("base64")}`);
+    expect(text).not.toContain("secret-token");
+  });
+
+  test("bad credentials degrade to an error string, not a 5xx", async () => {
+    const h = jiraHandler(stub(() => new Response("nope", { status: 401 })));
+    const res = await h(GET(`/api/tickets?keys=${key(405)}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.error).toBe("Jira rejected the credentials");
+    expect(body.tickets[key(405)]).toBeNull();
+  });
+
+  test("Jira being unreachable degrades the same way", async () => {
+    const h = jiraHandler(stub(() => {
+      throw new Error("connect ECONNREFUSED");
+    }));
+    const res = await h(GET(`/api/tickets?keys=${key(405)}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).error).toContain("ECONNREFUSED");
+  });
+
+  test("a key Jira does not know is null, not an error", async () => {
+    const h = jiraHandler(stub(() => new Response("", { status: 404 })));
+    const body = await (await h(GET(`/api/tickets?keys=${key(405)}`))).json();
+    expect(body).toMatchObject({ error: null });
+    expect(body.tickets[key(405)]).toBeNull();
+  });
+
+  test("without credentials nothing is fetched and the page is told why", async () => {
+    const h = jiraHandler(stub(() => issue("x", "x", "new", null)), null);
+    const body = await (await h(GET(`/api/tickets?keys=${key(405)}`))).json();
+    expect(body).toEqual({ configured: false, error: null, tickets: {} });
+    expect(calls).toEqual([]);
+  });
+
+  test("a value that is not a ticket key is never spent on a request", async () => {
+    // The key becomes a path segment in an authenticated request. Nothing that
+    // failed isTicketKey may get that far.
+    const h = jiraHandler(stub(() => issue("x", "x", "new", null)));
+    const body = await (await h(GET("/api/tickets?keys=NOTAKEY,../../admin,UTF-8"))).json();
+    expect(body.tickets).toEqual({});
+    expect(calls).toEqual([]);
+  });
+
+  test("a repeated key is fetched once and served from cache after", async () => {
+    const h = jiraHandler(stub(() => issue("cached", "Done", "done", null)));
+    await h(GET(`/api/tickets?keys=${key(405)},${key(405)}`));
+    expect(calls).toHaveLength(1);
+    const body = await (await h(GET(`/api/tickets?keys=${key(405)}`))).json();
+    expect(calls).toHaveLength(1);
+    expect(body.tickets[key(405)].summary).toBe("cached");
+  });
+
+  test("a failure is not cached, so the next load retries", async () => {
+    let fail = true;
+    const h = jiraHandler(stub(() => (fail ? new Response("", { status: 500 }) : issue("recovered", "Done", "done", null))));
+    expect((await (await h(GET(`/api/tickets?keys=${key(405)}`))).json()).error).toBe("Jira returned 500");
+    fail = false;
+    const body = await (await h(GET(`/api/tickets?keys=${key(405)}`))).json();
+    expect(body.error).toBeNull();
+    expect(body.tickets[key(405)].summary).toBe("recovered");
+  });
+
+  test("config reports the api unconfigured without credentials, configured with them", async () => {
+    const without = await (await jiraHandler(stub(() => issue("x", "x", "new", null)), null)(GET("/api/config"))).json();
+    expect(without).toMatchObject({ jiraConfigured: true, jiraApiConfigured: false });
+
+    const with_ = await (await jiraHandler(stub(() => issue("x", "x", "new", null)))(GET("/api/config"))).json();
+    expect(with_).toMatchObject({ jiraConfigured: true, jiraApiConfigured: true });
+  });
+
+  test("a browse url that is still the placeholder never counts as configured", async () => {
+    const h = createHandler({
+      root, annotationsPath, spawn: spy,
+      jiraBase: "https://CHANGEME.atlassian.net/browse",
+      jiraAuth: AUTH,
+      jiraFetch: stub(() => issue("x", "x", "new", null)),
+    });
+    expect(await (await h(GET("/api/config"))).json()).toMatchObject({ jiraApiConfigured: false });
+    expect((await (await h(GET(`/api/tickets?keys=${key(405)}`))).json()).configured).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("security", () => {
   test("start() binds 127.0.0.1, not every interface", async () => {
-    const server = start(0, { root, annotationsPath, spawn: spy });
+    const server = start(0, { root, annotationsPath, spawn: spy, jiraAuth: null });
     try {
       expect(server.hostname).toBe("127.0.0.1");
       // Loopback answers.
@@ -446,14 +711,14 @@ describe("errors and edges", () => {
   // These inject jiraBase rather than reading CT_JIRA_BASE, so the result does
   // not depend on whether the developer running them has it set in their shell.
   test("config reports unconfigured while the placeholder is in place", async () => {
-    const h = createHandler({ root, annotationsPath, spawn: spy, jiraBase: "https://CHANGEME.atlassian.net/browse" });
+    const h = createHandler({ root, annotationsPath, spawn: spy, jiraAuth: null, jiraBase: "https://CHANGEME.atlassian.net/browse" });
     const cfg = await (await h(GET("/api/config"))).json();
     expect(cfg.jiraConfigured).toBe(false);
     expect(cfg.jiraBase).toContain("CHANGEME");
   });
 
   test("config reports configured once a real host is supplied", async () => {
-    const h = createHandler({ root, annotationsPath, spawn: spy, jiraBase: "https://example.atlassian.net/browse" });
+    const h = createHandler({ root, annotationsPath, spawn: spy, jiraAuth: null, jiraBase: "https://example.atlassian.net/browse" });
     const cfg = await (await h(GET("/api/config"))).json();
     expect(cfg.jiraConfigured).toBe(true);
     expect(cfg.jiraBase).toBe("https://example.atlassian.net/browse");

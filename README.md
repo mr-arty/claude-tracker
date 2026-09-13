@@ -7,15 +7,22 @@ Jira tickets. Replaces a notepad full of `claude --resume <uuid>` lines.
 bun run server.ts     # http://127.0.0.1:4000
 ```
 
-Two things are configured from the environment so no real value enters git:
+Everything configurable comes from the environment so no real value enters git:
 
 ```bash
 export CT_JIRA_BASE="https://your-host.atlassian.net/browse"   # clickable tickets
 export CT_TICKET_PREFIXES="ABC,XYZ"                            # defaults to NR
+export CT_JIRA_EMAIL="you@example.com"                         # ticket titles and status
+export CT_JIRA_TOKEN="…"                                       # id.atlassian.net API token
 ```
 
-Without them the app still works; ticket keys just render as plain text and a
-banner says so.
+The credential pair can live in `~/.claude-tracker/credentials.json` instead, as
+`{"jiraEmail": "…", "jiraToken": "…"}`, for when the server is started from a
+desktop launcher that inherits no shell. `chmod 600` it; the tool warns if you
+have not. That file is in `$HOME`, never in the repo.
+
+Without any of this the app still works. Ticket keys render as plain text, or as
+links with no title, and a banner says which.
 
 ## What it does
 
@@ -24,6 +31,14 @@ banner says so.
   preferring the `aiTitle` Claude Code already writes.
 - Tracks the sessions you pick: tickets with per-ticket done state, Jira-style
   priority, a name, and tags.
+- Shows the canonical name Claude Code carries for a session (`@api-worker`)
+  under the name you typed, when the session has one. Read from the transcript's
+  last `agent-name` record, so a session renamed mid-run shows its current name.
+- Lists the pull requests opened during a session in a second tab, read from the
+  transcript's own `pr-link` records. No GitHub call, no token, no `gh`.
+- Fills ticket chips with the Jira summary, status and assignee when credentials
+  are set. Fetched after the page renders, so Jira being slow or down costs
+  nothing: the page is exactly what it was before the feature existed.
 - Resume opens a terminal running that session, falling back to the clipboard.
 - Search covers every session on disk, not just the tracked ones, so deleting a
   row loses no history. It matches session ids, titles, ticket keys, and the
@@ -46,8 +61,11 @@ banner says so.
 | `scan.ts`                | Find sessions, resolve real project paths from `cwd` |
 | `extract.ts`             | Transcript to ticket and name                        |
 | `annotations.ts`         | The working set, atomic writes, serialised mutations |
+| `jira.ts`                | Credentials, and the one network call in the tool    |
 | `server.ts`              | Routes, ticket index, guarded resume                 |
 | `index.html`             | The UI                                               |
+| `prs.html`               | The pull requests from one session                   |
+| `tokens.css`             | Colour tokens, shared so the AA pairs cannot drift   |
 | `MANUAL-CHECKLIST.md`    | The UI test pass                                     |
 | `TODOS.md`               | Deferred work, with reasons                          |
 | `VERSION` / `version.ts` | Current version, semver parsing and bumping          |
@@ -71,5 +89,5 @@ major means a stored file stops loading, minor means new capability with old
 files still working, patch means nothing observable changed.
 
 ```bash
-bun test    # 144 tests, no dependencies
+bun test    # 210 tests, no dependencies
 ```

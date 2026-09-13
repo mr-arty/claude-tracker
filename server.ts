@@ -2,9 +2,13 @@
  * HTTP surface. Routing and wiring only; the real work lives in the modules.
  *
  *   GET    /                     index.html
+ *   GET    /prs/:id              prs.html, the pull requests opened in one session
+ *   GET    /tokens.css           the colour tokens both pages share
  *   GET    /api/rows             tracked rows, joined with on-disk metadata
  *   GET    /api/untracked        sessions not tracked, ticket and name resolved
  *   GET    /api/search?q=        session id, ticket, name, mention or body text, from the index
+ *   GET    /api/prs/:id          pull requests opened in one session
+ *   GET    /api/tickets?keys=    Jira summary and status for the given keys
  *   PUT    /api/rows/:id         merge one row
  *   DELETE /api/rows/:id         hard delete the row, never the transcript
  *   POST   /api/resume/:id       spawn a terminal, or fall back to the clipboard
@@ -21,7 +25,8 @@
  */
 
 import { scanSessions, projectsRoot, type SessionMeta } from "./scan.ts";
-import { extractSession, scanFull } from "./extract.ts";
+import { extractSession, scanFull, isTicketKey, type PrRef } from "./extract.ts";
+import { loadAuth, siteRoot, fetchTickets, credentialsPath, type JiraAuth, type TicketInfo } from "./jira.ts";
 import { read, upsert, remove, rollup, storePath, CorruptStoreError, type Annotation } from "./annotations.ts";
 import { currentVersion } from "./version.ts";
 
@@ -61,6 +66,13 @@ export interface Deps {
    * or fails depending on who runs it, which is worse than no test.
    */
   jiraBase?: string;
+  /**
+   * Jira credentials and the fetch used to spend them. Both injectable: this is
+   * the only network call in the tool, and no test should ever make it.
+   * Undefined means "load from the environment"; null means "explicitly none".
+   */
+  jiraAuth?: JiraAuth | null;
+  jiraFetch?: typeof fetch;
 }
 
 /**
@@ -88,6 +100,9 @@ const SNIPPET_PAD = 60;
 /** Most body-text results returned. The stronger tiers are never capped. */
 const TEXT_LIMIT = 25;
 
+/** How long a Jira summary and status stay fresh. Long enough that a reload is free. */
+const TICKET_TTL_MS = 5 * 60 * 1000;
+
 export interface Snippet {
   before: string;
   match: string;
@@ -113,21 +128,27 @@ interface Entry {
   prose: string;
   /** Held alongside `prose` so a query does not lowercase the whole corpus per keystroke. */
   proseLower: string;
+  /** The name Claude Code carries for the session, without the display @. */
+  agentName: string | null;
+  /** Pull requests opened during the session, deduped, newest first. */
+  prs: PrRef[];
 }
 
 /**
  * Searchable state for every session, held in memory.
  *
- * A full rebuild costs about 664ms over a 152MB corpus and holds roughly 6.5MB, so
- * a query is a map walk rather than a rescan. Invalidation reuses the mtimes
- * the directory scan already collected: no extra stat calls, and only a transcript
- * that changed is re-read.
+ * A full rebuild costs about 950ms over a 196MB corpus, so a query is a map walk
+ * rather than a rescan. Invalidation reuses the mtimes the directory scan already
+ * collected: no extra stat calls, and only a transcript that changed is re-read.
  *
- * Body text is what makes it 6.5MB rather than 9KB, and it stays a plain scan
- * rather than an inverted index on purpose: indexing prose only leaves 3.2MB, and
- * a substring sweep of that answers a query in 1-3ms. An inverted index would be
- * faster asymptotically while losing phrase search and snippets, both of which
- * fall out of the scan for free.
+ * Body text is what gives it size: prose is 2.0% of the raw bytes (4.0MB), held
+ * twice so a query does not lowercase the corpus per keystroke. It stays a plain
+ * scan rather than an inverted index on purpose — a substring sweep of 4MB answers
+ * in 1-4ms, and an inverted index would be faster asymptotically while losing
+ * phrase search and snippets, both of which fall out of the scan for free.
+ *
+ * The session name and PR list ride along on the same read for nothing: 25 names
+ * and 87 pull requests across the whole corpus.
  */
 class TicketIndex {
   private entries = new Map<string, Entry>();
@@ -141,7 +162,7 @@ class TicketIndex {
       const { ticket, name, source } = await extractSession(s.path);
       // scanFull is the only full read. extractSession keeps its 512KB probe, so
       // which ticket a session resolves to does not change with this.
-      const { mentions, prose } = await scanFull(s.path);
+      const { mentions, prose, agentName, prs } = await scanFull(s.path);
       this.entries.set(s.id, {
         mtime: s.lastActive,
         owned: ticket,
@@ -150,6 +171,8 @@ class TicketIndex {
         mentions,
         prose,
         proseLower: prose.toLowerCase(),
+        agentName,
+        prs,
       });
     }
   }
@@ -221,6 +244,14 @@ class TicketIndex {
   ticketsFor(id: string): string[] {
     return [...(this.entries.get(id)?.mentions ?? [])].sort();
   }
+
+  agentNameFor(id: string): string | null {
+    return this.entries.get(id)?.agentName ?? null;
+  }
+
+  prsFor(id: string): PrRef[] {
+    return this.entries.get(id)?.prs ?? [];
+  }
 }
 
 const json = (body: unknown, status = 200) =>
@@ -233,6 +264,11 @@ export function createHandler(deps: Deps = {}) {
   const annotationsPath = deps.annotationsPath ?? storePath();
   const spawn = deps.spawn ?? realSpawn;
   const jiraBase = deps.jiraBase ?? JIRA_BASE;
+  const jiraFetch = deps.jiraFetch ?? fetch;
+  // Resolved once. A promise rather than a value so construction stays sync.
+  const jiraAuth: Promise<JiraAuth | null> =
+    deps.jiraAuth === undefined ? loadAuth() : Promise.resolve(deps.jiraAuth);
+  const ticketCache = new Map<string, { at: number; value: TicketInfo | null }>();
   const index = new TicketIndex();
 
   /** Scan disk and refresh the index. Every request that needs session data starts here. */
@@ -251,6 +287,10 @@ export function createHandler(deps: Deps = {}) {
     projectName: s?.projectName ?? null,
     lastActive: s?.lastActive ?? null,
     resumeCommand: `claude --resume ${id}`,
+    // Derived, never stored. After the spread so a hand-edited annotations.json
+    // carrying either key cannot shadow what the transcript actually says.
+    agentName: index.agentNameFor(id),
+    prCount: index.prsFor(id).length,
   });
 
   return async function handle(request: Request): Promise<Response> {
@@ -265,12 +305,69 @@ export function createHandler(deps: Deps = {}) {
         return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
       }
 
+      // Both pages share one token sheet so the AA-checked colour pairs are
+      // maintained in one place rather than drifting between two files.
+      if (method === "GET" && pathname === "/tokens.css") {
+        const file = Bun.file(new URL("./tokens.css", import.meta.url).pathname);
+        if (!(await file.exists())) return new Response("tokens.css missing", { status: 500 });
+        return new Response(file, { headers: { "content-type": "text/css; charset=utf-8" } });
+      }
+
+      // The page reads its own session id back out of the path. Validated here
+      // first so a bad id never reaches a tab at all.
+      const prsPage = pathname.match(/^\/prs\/(.+)$/);
+      if (prsPage && method === "GET") {
+        if (!UUID.test(decodeURIComponent(prsPage[1]!))) return json({ error: "not found" }, 404);
+        const file = Bun.file(new URL("./prs.html", import.meta.url).pathname);
+        if (!(await file.exists())) return new Response("prs.html missing", { status: 500 });
+        return new Response(file, { headers: { "content-type": "text/html; charset=utf-8" } });
+      }
+
       if (method === "GET" && pathname === "/api/config") {
         return json({
           version: await currentVersion(),
           jiraBase,
           jiraConfigured: jiraBase !== JIRA_PLACEHOLDER,
+          jiraApiConfigured: jiraBase !== JIRA_PLACEHOLDER && (await jiraAuth) !== null,
         });
+      }
+
+      /**
+       * Jira summary and status for the keys already on the page.
+       *
+       * Never 5xx. Jira slow, down or unauthorised comes back as `error` with
+       * whatever did resolve, and the page keeps rendering bare keys as before.
+       */
+      if (method === "GET" && pathname === "/api/tickets") {
+        const auth = await jiraAuth;
+        const configured = jiraBase !== JIRA_PLACEHOLDER && auth !== null;
+        // Validated before anything is spent on them: a key is the only thing
+        // that may become a path segment in a request we authenticate.
+        const keys = [...new Set((url.searchParams.get("keys") ?? "").split(",").map((k) => k.trim().toUpperCase()))]
+          .filter((k) => k && isTicketKey(k));
+        if (!configured || keys.length === 0) return json({ configured, error: null, tickets: {} });
+
+        const now = Date.now();
+        const tickets: Record<string, TicketInfo | null> = {};
+        const stale: string[] = [];
+        for (const k of keys) {
+          const hit = ticketCache.get(k);
+          if (hit && now - hit.at < TICKET_TTL_MS) tickets[k] = hit.value;
+          else stale.push(k);
+        }
+
+        let error: string | null = null;
+        if (stale.length) {
+          const fetched = await fetchTickets(stale, siteRoot(jiraBase), auth!, jiraFetch);
+          error = fetched.error;
+          for (const [k, value] of Object.entries(fetched.tickets)) {
+            tickets[k] = value;
+            // A failure is not cached: the next reload should retry, not inherit it.
+            if (!error) ticketCache.set(k, { at: now, value });
+          }
+        }
+
+        return json({ configured, error, tickets });
       }
 
       // Tracked rows, joined with what is currently on disk. A row whose session
@@ -302,6 +399,8 @@ export function createHandler(deps: Deps = {}) {
             suggestedName: index.entry(s.id)?.name ?? null,
             suggestionSource: index.entry(s.id)?.source ?? null,
             mentions: index.ticketsFor(s.id).slice(0, 8),
+            agentName: index.agentNameFor(s.id),
+            prCount: index.prsFor(s.id).length,
           }));
         return json({ sessions: out });
       }
@@ -324,6 +423,8 @@ export function createHandler(deps: Deps = {}) {
               id,
               kind,
               name: e?.name ?? null,
+              agentName: e?.agentName ?? null,
+              prCount: e?.prs.length ?? 0,
               ticket: e?.owned ?? null,
               project: s.project,
               projectName: s.projectName,
@@ -342,6 +443,28 @@ export function createHandler(deps: Deps = {}) {
         let texts = 0;
         const capped = results.filter((r) => r.kind !== "text" || ++texts <= TEXT_LIMIT);
         return json({ query: q, results: capped });
+      }
+
+      // Everything a PR tab needs in one request: its own title comes from the
+      // index, so the page never follows up for the session it is already about.
+      const prsApi = pathname.match(/^\/api\/prs\/(.+)$/);
+      if (prsApi && method === "GET") {
+        const id = decodeURIComponent(prsApi[1]!);
+        if (!UUID.test(id)) return badRequest("not a session id");
+
+        const sessions = await snapshot();
+        const session = sessions.find((s) => s.id === id);
+        if (!session) return json({ error: "session not on disk", id }, 404);
+
+        return json({
+          id,
+          name: index.entry(id)?.name ?? null,
+          agentName: index.agentNameFor(id),
+          project: session.project,
+          projectName: session.projectName,
+          lastActive: session.lastActive,
+          prs: index.prsFor(id),
+        });
       }
 
       const rowMatch = pathname.match(/^\/api\/rows\/(.+)$/);
@@ -417,5 +540,7 @@ if (import.meta.main) {
   console.log(`claude-tracker ${await currentVersion()}  http://${HOST}:${server.port}`);
   if (JIRA_BASE === JIRA_PLACEHOLDER) {
     console.log(`  note: set CT_JIRA_BASE=https://your-host.atlassian.net/browse to make ticket links work`);
+  } else if (!(await loadAuth())) {
+    console.log(`  note: set CT_JIRA_EMAIL and CT_JIRA_TOKEN, or write ${credentialsPath()}, to show ticket titles`);
   }
 }

@@ -10,6 +10,44 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+### Added
+- The canonical name Claude Code carries for a session, shown as `@name` under
+  the name you typed. Read from the transcript's last `agent-name` record: three
+  local sessions were renamed mid-run, so taking the first would report a name
+  the session no longer answers to. 25 of 50 sessions have one; the rest show
+  nothing rather than a placeholder. Never overwrites what you typed, and cannot
+  be persisted by a client — it is derived on every read.
+- A PRs button on each session, opening a second tab listing the pull requests
+  opened during it. Read from the transcript's own `pr-link` records, so there is
+  no GitHub call, no token and no `gh` dependency. The records repeat every turn
+  (3170 of them locally for 87 real PRs) and are deduped by url, keeping the
+  earliest timestamp as when the PR opened. Disabled when a session opened none.
+- Jira summary, status and assignee on ticket chips, from `CT_JIRA_EMAIL` and
+  `CT_JIRA_TOKEN`, or `~/.claude-tracker/credentials.json`. The REST root is
+  derived from `CT_JIRA_BASE` rather than configured twice. Fetched after the
+  page renders and cached for five minutes, so Jira slow or down leaves the page
+  exactly as it was before this existed. `GET /api/tickets?keys=` never returns
+  5xx for a Jira problem; it returns an `error` string the banner shows.
+- `GET /api/prs/:id`, `GET /prs/:id` and `GET /tokens.css`.
+
+### Changed
+- `agentName` and `prCount` on every session in `/api/rows`, `/api/untracked` and
+  `/api/search`. Additive; existing fields are unchanged, and no field was added
+  to the stored `annotations.json`, so a 0.3.0 file loads untouched.
+- The colour tokens moved from inline `<style>` into `tokens.css`, shared by both
+  pages so the AA-checked fill/ink pairs are maintained once. New `--pr` pair:
+  5.24:1 light, 7.30:1 dark.
+
+### Notes
+- Both new record types sit past the 512KB probe `extractSession` uses — 22 of 23
+  sessions with PRs and 15 of 24 named ones — so both are harvested in `scanFull`,
+  which already reads every byte for the search index. Measured cost of the two
+  extra passes: 222ms across a 196MB corpus, against a ~950ms full rebuild.
+- Jira Cloud answers 404, not 401, for an issue request with a bad token, so a
+  wrong credential is indistinguishable from a deleted ticket at that endpoint.
+  When every requested key comes back 404, `/rest/api/3/myself` is called once to
+  tell the two apart; it does answer 401. Verified against a real host.
+
 ## [0.3.0] - 2026-09-05
 
 ### Added

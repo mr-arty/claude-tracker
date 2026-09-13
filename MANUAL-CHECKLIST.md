@@ -1,6 +1,6 @@
 # Manual UI checklist
 
-The server has 124 automated tests. The UI does not — that was a deliberate
+The server has 210 automated tests. The UI does not — that was a deliberate
 call: it is ~500 lines you exercise daily, and a browser harness would be more
 machinery than the thing it tests. This is the repeatable pass instead.
 
@@ -124,6 +124,48 @@ bun run server.ts # http://127.0.0.1:4000
       in a command's output — a file path from a `grep` result, say. It must not
       match. Only what was said is indexed.
 
+## Session name and pull requests
+
+- [ ] **Canonical name.** A session Claude Code has named shows a faint mono
+      `@name` line directly under the editable name field. It has exactly one
+      `@`, not two.
+- [ ] **Unnamed session.** A session with no name shows nothing there — no
+      placeholder, no `@`, no blank gap that shifts the row's other lines.
+- [ ] **Renaming is yours alone.** Type a new name in the editable field and blur.
+      The `@name` line is unchanged. Reload; both are as you left them.
+- [ ] **PRs button, with PRs.** A session that opened pull requests shows
+      `PRs (n)` with `n` matching what that session actually opened. Clicking
+      opens a **new browser tab**, leaving the tracker tab where it was.
+- [ ] **PRs button, without.** A session that opened none shows a disabled `PRs`
+      button whose tooltip says so. Clicking does nothing.
+- [ ] **The PR page.** It titles itself with the session name, shows the `@name`,
+      short id, project and age, and lists each PR as `#number` linking to
+      GitHub. Each PR appears **once**, even though the transcript records it on
+      every turn. The back link returns to `/`.
+- [ ] **A session in two repositories** groups its PRs under a heading per
+      repository. One repository shows a flat list, no heading.
+- [ ] **A dead session's PR page.** Open `/prs/<uuid>` for a session no longer on
+      disk. An empty state explains it, rather than a blank page or a stack trace.
+
+## Jira titles and status
+
+- [ ] **Enrichment lands.** With `CT_JIRA_EMAIL` and `CT_JIRA_TOKEN` set, ticket
+      chips gain an uppercase status shortly after the page renders, and hovering
+      the key shows the summary and assignee. The page was usable before it
+      arrived.
+- [ ] **Status colour.** A done ticket's status is green, an in-progress one
+      amber, a to-do one grey. All three stay legible in both themes.
+- [ ] **No credentials.** Restart with the token unset. A banner names both
+      variables and the credentials file. Chips render exactly as they did before
+      this feature: keys, links, no status.
+- [ ] **Bad credentials.** Restart with a deliberately wrong token. A banner says
+      Jira rejected the credentials — **not** silence. Jira answers 404 rather
+      than 401 for a bad token, so silence here is the failure this catches.
+- [ ] **Jira unreachable.** Point `CT_JIRA_BASE` at a host that does not resolve.
+      The page renders fully; only a banner differs. No row is missing.
+- [ ] **The token never reaches the browser.** With enrichment working, search the
+      page source and the `/api/tickets` response for your token. Neither has it.
+
 ## Empty and edge states
 
 - [ ] **No tracked rows.** Delete everything. A bordered empty state explains
@@ -140,7 +182,9 @@ bun run server.ts # http://127.0.0.1:4000
 - [ ] **Version footer.** The bottom of the page reads `Version: <x.y.z>` and
       matches `cat VERSION`.
 - [ ] **Dark mode.** Switch your OS theme. Text stays readable, the dead-row and
-      partial-rollup colours remain distinguishable.
+      partial-rollup colours remain distinguishable. Resume, Copy ID and PRs each
+      keep readable ink on their fill. Check `/prs/<id>` in both themes too — it
+      shares `tokens.css`, so a token that only works on one page is the bug.
 
 ## One-time validations
 
