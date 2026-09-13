@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
 ### Added
 - The canonical name Claude Code carries for a session, shown as `@name` under
   the name you typed. Read from the transcript's last `agent-name` record: three
