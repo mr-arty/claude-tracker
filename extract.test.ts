@@ -476,16 +476,22 @@ describe.skipIf(!HAS_FIXTURES)("parity against real transcripts", () => {
   });
 
   test("every fixture session still lists the pull requests it opened", async () => {
-    const wrong: string[] = [];
+    // Subset, not equality. A live session keeps opening pull requests — the
+    // session running this suite is itself in the corpus — so pinning an exact
+    // list makes the fixture expire the moment anyone opens another PR, which
+    // fails as a regression when nothing regressed. A PR is never un-opened, so
+    // "everything we recorded is still found" is the property that holds.
+    // Extra entries are covered by the dedupe test below and by the unit tests.
+    const missing: string[] = [];
     for (const [prefix, expected] of Object.entries(fixtures.prs)) {
       const session = find(prefix);
       if (!session) continue;
       const { prs } = await scanFull(session.path);
-      const got = prs.map((p) => p.url).sort();
-      const want = [...expected].sort();
-      if (got.join() !== want.join()) wrong.push(`${prefix}: expected ${want.join(", ")}, got ${got.join(", ")}`);
+      const got = new Set(prs.map((p) => p.url));
+      const gone = expected.filter((url) => !got.has(url));
+      if (gone.length) missing.push(`${prefix}: no longer finds ${gone.join(", ")}`);
     }
-    expect(wrong).toEqual([]);
+    expect(missing).toEqual([]);
   });
 
   test("pull requests are deduped across the real corpus, not just in the unit tests", async () => {
