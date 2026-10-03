@@ -10,6 +10,21 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+### Fixed
+- Tracking a session from a search result dropped its title and ticket. The
+  Track button sent an empty patch, so the row was created with `name: ""` and
+  no tickets — losing exactly the two values you had just been looking at. It
+  now seeds both from the search result, matching what the Add-session picker
+  already did.
+
+### Added
+- The rollup box at the left of a tracked row is clickable: one click marks the
+  row complete, another clears it. It settles the row's `done` flag and every
+  ticket together, so the glyph and the per-ticket checkboxes cannot disagree.
+  A completed row takes a translucent green tint, mixed with `transparent`
+  rather than a fixed fill so it reads correctly in both themes and over the
+  not-on-disk background.
+
 ## [0.4.0] - 2026-09-13
 
 ### Added
