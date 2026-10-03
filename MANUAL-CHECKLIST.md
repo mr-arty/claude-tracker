@@ -124,6 +124,20 @@ bun run server.ts # http://127.0.0.1:4000
       in a command's output — a file path from a `grep` result, say. It must not
       match. Only what was said is indexed.
 
+## Completion
+
+- [ ] **Rollup marks complete.** Click the box at a row's left edge. The glyph
+      becomes a tick, every ticket checkbox on the row ticks, and the row takes
+      a soft green tint. Reload: it stayed.
+- [ ] **And clears.** Click it again. Glyph, checkboxes and tint all revert
+      together — no half state where the glyph and the boxes disagree.
+- [ ] **A row with no tickets still toggles.** Completion is the row's own flag
+      when there is nothing to roll up.
+- [ ] **Tint in both themes,** and on a not-on-disk row, where it sits over the
+      warn background rather than replacing it with something unreadable.
+- [ ] **Search results do not toggle.** The box on a search result is inert —
+      there is no tracked row behind it to mark.
+
 ## Session name and pull requests
 
 - [ ] **Canonical name.** A session Claude Code has named shows a faint mono

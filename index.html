@@ -51,8 +51,17 @@
     display: grid; grid-template-columns: 22px 1fr auto; gap: 11px; align-items: start;
   }
   .row.dead { background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+  /* After .dead on purpose: a finished row reads as finished even once its
+     transcript ages off disk. Mixed with transparent rather than using
+     --accent-soft so the tint lands on whatever the row sits on, in both themes. */
+  .row.done {
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
 
   .rollup { font-size: 15px; line-height: 1.4; text-align: center; user-select: none; }
+  .rollup[data-act=rollup] { cursor: pointer; border-radius: 4px; }
+  .rollup[data-act=rollup]:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .rollup[data-state=all]     { color: var(--accent); }
   .rollup[data-state=partial] { color: var(--star); }
   .rollup[data-state=none]    { color: var(--faint); }
@@ -299,8 +308,10 @@ const prButton = (r) => `<button class="prbtn" data-act="prs" data-id="${r.id}" 
 
 function rowHtml(row) {
   const starred = row.priority === "Highest" || row.priority === "High";
-  return `<div class="row ${row.alive ? "" : "dead"}">
-    <div class="rollup" data-state="${row.rollup}" title="${row.rollup}">${ROLLUP[row.rollup]}</div>
+  const complete = row.rollup === "all";
+  return `<div class="row ${row.alive ? "" : "dead"} ${complete ? "done" : ""}">
+    <div class="rollup" data-act="rollup" data-id="${row.id}" data-state="${row.rollup}"
+         title="${complete ? "Mark not complete" : "Mark complete"}">${ROLLUP[row.rollup]}</div>
     <div>
       <input class="name" value="${esc(row.name)}" placeholder="Untitled session" data-act="rename" data-id="${row.id}">
       ${agentNameHtml(row.agentName)}
@@ -473,6 +484,12 @@ document.addEventListener("click", async (e) => {
   if (act === "untag") {
     return save(id, { tags: row.tags.filter((t) => t !== el.dataset.tag) });
   }
+  if (act === "rollup") {
+    // One click settles the whole row, tickets included, so the glyph and the
+    // per-ticket checkboxes can never disagree about whether this is finished.
+    const complete = row.rollup !== "all";
+    return save(id, { done: complete, tickets: row.tickets.map((t) => ({ ...t, done: complete })) });
+  }
   if (act === "cycle") {
     return save(id, { priority: row.priority === "Highest" ? "Medium" : "Highest" });
   }
@@ -494,7 +511,14 @@ document.addEventListener("click", async (e) => {
     return toast(ok ? "No terminal found. Command copied." : res.command);
   }
   if (act === "track") {
-    await put(id, {});
+    // The title and ticket are already on screen in the search result. Sending
+    // an empty patch made them vanish the moment you tracked the row, which is
+    // the one moment you were looking at them.
+    const hit = searching?.results.find((r) => r.id === id);
+    await put(id, {
+      name: hit?.name ?? "",
+      tickets: hit?.ticket ? [{ key: hit.ticket, done: false }] : [],
+    });
     searching = null;
     $("#q").value = "";
     return load();
