@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-03
+
 ### Fixed
 - Tracking a session from a search result dropped its title and ticket. The
   Track button sent an empty patch, so the row was created with `name: ""` and
