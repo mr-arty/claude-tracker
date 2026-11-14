@@ -22,6 +22,8 @@ import {
   proseFromText,
   agentNameFromText,
   prsFromText,
+  mcpPrsFromText,
+  mergePrs,
   scanFull,
   isTicketKey,
   TICKET_PREFIXES,
@@ -336,6 +338,7 @@ describe("prsFromText", () => {
         repository: "owner/repo",
         url: "https://github.com/owner/repo/pull/7",
         firstSeen: "2026-09-01T10:00:00.000Z",
+        source: "pr-link",
       },
     ]);
   });
@@ -397,6 +400,120 @@ describe("prsFromText", () => {
     const text = `${filler}\n${JSON.stringify(prLink(99, "2026-09-01T10:00:00.000Z"))}`;
     expect(text.length).toBeGreaterThan(1024 * 1024);
     expect(prsFromText(text).map((p) => p.number)).toEqual([99]);
+  });
+});
+
+describe("mcpPrsFromText", () => {
+  const jsonl = (...records: unknown[]) => records.map((r) => JSON.stringify(r)).join("\n");
+
+  const toolUse = (id: string, name = "mcp__github__create_pull_request") => ({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id, name, input: { owner: "owner", repo: "repo" } }] },
+  });
+  const toolResult = (id: string, body: string, timestamp = "2026-10-28T08:59:11.229Z") => ({
+    type: "user",
+    timestamp,
+    message: { content: [{ type: "tool_result", tool_use_id: id, content: body }] },
+  });
+  const created = (n: number) => JSON.stringify({ html_url: `https://github.com/owner/repo/pull/${n}`, id: "50" });
+
+  test("finds a PR the MCP server opened, which writes no pr-link", () => {
+    const text = jsonl(toolUse("t1"), toolResult("t1", created(1234)));
+    expect(mcpPrsFromText(text)).toEqual([
+      {
+        number: 1234,
+        repository: "owner/repo",
+        url: "https://github.com/owner/repo/pull/1234",
+        firstSeen: "2026-10-28T08:59:11.229Z",
+        source: "mcp",
+      },
+    ]);
+  });
+
+  test("a PR the session only READ is not claimed", () => {
+    // The whole reason this pairs tool_use with tool_result instead of scanning
+    // for urls: reviewing a PR and opening one look identical in prose.
+    const text = jsonl(
+      { type: "assistant", message: { content: [{ type: "text", text: "see https://github.com/owner/repo/pull/99" }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "other", content: created(99) }] } },
+    );
+    expect(mcpPrsFromText(text)).toEqual([]);
+  });
+
+  test("a result from a DIFFERENT mcp tool is not a PR this session opened", () => {
+    const text = jsonl(
+      toolUse("t1", "mcp__github__get_pull_request"),
+      toolResult("t1", created(500)),
+    );
+    expect(mcpPrsFromText(text)).toEqual([]);
+  });
+
+  test("a failed create contributes nothing", () => {
+    const text = jsonl(toolUse("t1"), toolResult("t1", "error: validation failed"));
+    expect(mcpPrsFromText(text)).toEqual([]);
+  });
+
+  test("several creates are all found, and a repeat is deduped to the earliest", () => {
+    const text = jsonl(
+      toolUse("t1"), toolResult("t1", created(1), "2026-10-02T10:00:00.000Z"),
+      toolUse("t2"), toolResult("t2", created(2), "2026-10-01T10:00:00.000Z"),
+      toolUse("t3"), toolResult("t3", created(1), "2026-10-03T10:00:00.000Z"),
+    );
+    const prs = mcpPrsFromText(text);
+    expect(prs.map((p) => p.number).sort()).toEqual([1, 2]);
+    expect(prs.find((p) => p.number === 1)!.firstSeen).toBe("2026-10-02T10:00:00.000Z");
+  });
+
+  test("structured tool_result content is read too, not only a string", () => {
+    const text = jsonl(toolUse("t1"), {
+      type: "user",
+      timestamp: "2026-10-28T09:00:00.000Z",
+      message: { content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: created(42) }] }] },
+    });
+    expect(mcpPrsFromText(text).map((p) => p.number)).toEqual([42]);
+  });
+
+  test("unparseable lines are skipped, not fatal", () => {
+    const text = `{ not json\n${JSON.stringify(toolUse("t1"))}\n${JSON.stringify(toolResult("t1", created(8)))}\n{"type":`;
+    expect(mcpPrsFromText(text).map((p) => p.number)).toEqual([8]);
+  });
+
+  test("a transcript with no MCP creates yields nothing", () => {
+    expect(mcpPrsFromText(jsonl({ type: "user", message: { content: "hello" } }))).toEqual([]);
+  });
+});
+
+describe("mergePrs", () => {
+  const pr = (n: number, source: "pr-link" | "mcp", firstSeen: string) => ({
+    number: n,
+    repository: "owner/repo",
+    url: `https://github.com/owner/repo/pull/${n}`,
+    firstSeen,
+    source,
+  });
+
+  test("a pr-link wins a tie over the reconstructed mcp record", () => {
+    const merged = mergePrs([pr(1, "mcp", "2026-10-02T00:00:00.000Z")], [pr(1, "pr-link", "2026-10-02T00:00:00.000Z")]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.source).toBe("pr-link");
+  });
+
+  test("the earliest sighting is kept whichever list it came from", () => {
+    const merged = mergePrs([pr(1, "pr-link", "2026-10-05T00:00:00.000Z")], [pr(1, "mcp", "2026-10-01T00:00:00.000Z")]);
+    expect(merged[0]!.firstSeen).toBe("2026-10-01T00:00:00.000Z");
+  });
+
+  test("distinct PRs survive and come back newest first", () => {
+    const merged = mergePrs(
+      [pr(1, "pr-link", "2026-10-01T00:00:00.000Z")],
+      [pr(2, "mcp", "2026-10-03T00:00:00.000Z")],
+    );
+    expect(merged.map((p) => p.number)).toEqual([2, 1]);
+  });
+
+  test("merging nothing is empty, not a throw", () => {
+    expect(mergePrs()).toEqual([]);
+    expect(mergePrs([], [])).toEqual([]);
   });
 });
 

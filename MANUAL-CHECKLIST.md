@@ -161,6 +161,15 @@ bun run server.ts # http://127.0.0.1:4000
 - [ ] **A dead session's PR page.** Open `/prs/<uuid>` for a session no longer on
       disk. An empty state explains it, rather than a blank page or a stack trace.
 
+- [ ] **A PR opened via the GitHub MCP server appears.** It writes no `pr-link`,
+      so this is the case that used to show nothing at all.
+- [ ] **A session whose twin holds the records shows them,** tagged `via <id>`,
+      and hovering that tag names the sibling session.
+- [ ] **A sibling in a different project does not pool.** Two sessions can share
+      a name across projects without inventing each other's PRs.
+- [ ] **Reloading does not grow the list.** The union is rebuilt each refresh; a
+      count that climbs on every reload means it is accumulating.
+
 ## Jira titles and status
 
 - [ ] **Enrichment lands.** With `CT_JIRA_EMAIL` and `CT_JIRA_TOKEN` set, ticket

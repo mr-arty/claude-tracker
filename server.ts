@@ -25,7 +25,7 @@
  */
 
 import { scanSessions, projectsRoot, type SessionMeta } from "./scan.ts";
-import { extractSession, scanFull, isTicketKey, type PrRef } from "./extract.ts";
+import { extractSession, scanFull, isTicketKey, mergePrs, type PrRef } from "./extract.ts";
 import { loadAuth, siteRoot, fetchTickets, credentialsPath, type JiraAuth, type TicketInfo } from "./jira.ts";
 import { read, upsert, remove, rollup, storePath, CorruptStoreError, type Annotation } from "./annotations.ts";
 import { currentVersion } from "./version.ts";
@@ -114,6 +114,11 @@ export interface Hit {
   kind: MatchKind;
 }
 
+/** A PR, plus which session's transcript actually recorded it. */
+export interface IndexedPr extends PrRef {
+  sessionId: string;
+}
+
 interface Entry {
   mtime: number;
   /** The ticket this session is actually about, or null. */
@@ -130,16 +135,19 @@ interface Entry {
   proseLower: string;
   /** The name Claude Code carries for the session, without the display @. */
   agentName: string | null;
-  /** Pull requests opened during the session, deduped, newest first. */
+  /** Pull requests this transcript itself recorded, deduped, newest first. */
   prs: PrRef[];
+  /** Grouping key for the union below. A name is only reused within one project. */
+  project: string;
 }
 
 /**
  * Searchable state for every session, held in memory.
  *
- * A full rebuild costs about 950ms over a 196MB corpus, so a query is a map walk
- * rather than a rescan. Invalidation reuses the mtimes the directory scan already
- * collected: no extra stat calls, and only a transcript that changed is re-read.
+ * A full rebuild costs about 1.7s over a 355MB corpus, so a query is a map walk
+ * rather than a rescan (measured 1-10ms warm). Invalidation reuses the mtimes the
+ * directory scan already collected: no extra stat calls, and only a transcript
+ * that changed is re-read.
  *
  * Body text is what gives it size: prose is 2.0% of the raw bytes (4.0MB), held
  * twice so a query does not lowercase the corpus per keystroke. It stays a plain
@@ -147,11 +155,17 @@ interface Entry {
  * in 1-4ms, and an inverted index would be faster asymptotically while losing
  * phrase search and snippets, both of which fall out of the scan for free.
  *
- * The session name and PR list ride along on the same read for nothing: 25 names
- * and 87 pull requests across the whole corpus.
+ * The session name and PR list ride along on the same read for nothing: 30 names
+ * and 58 pull requests across the whole corpus.
  */
 class TicketIndex {
   private entries = new Map<string, Entry>();
+  /** project + agentName -> the PRs of every session under that name. See regroup(). */
+  private prsByGroup = new Map<string, IndexedPr[]>();
+
+  private static groupKey(project: string, agentName: string): string {
+    return `${project}\u0000${agentName}`;
+  }
 
   async refresh(sessions: SessionMeta[]): Promise<void> {
     const live = new Set(sessions.map((s) => s.id));
@@ -165,6 +179,7 @@ class TicketIndex {
       const { mentions, prose, agentName, prs } = await scanFull(s.path);
       this.entries.set(s.id, {
         mtime: s.lastActive,
+        project: s.project,
         owned: ticket,
         source,
         name,
@@ -174,6 +189,44 @@ class TicketIndex {
         agentName,
         prs,
       });
+    }
+
+    this.regroup();
+  }
+
+  /**
+   * Union the PRs of every session sharing one name, within one project.
+   *
+   * Claude Code does not always write the pr-link into the transcript that ran
+   * the command. Two concurrent sessions under the same name, seconds apart:
+   * one ran all three `gh pr create` calls, the other received every record.
+   * Tracking the session you actually worked in then showed no PRs at all.
+   *
+   * Scoped to one project because a name like "fix-ci" is reusable, and a union
+   * across unrelated work would invent PRs rather than find them. No name is
+   * currently shared across projects, so this costs nothing today and bounds the
+   * damage when one is.
+   *
+   * Rebuilt from scratch each refresh rather than updated in place: Entry.prs
+   * stays exactly what its own transcript said, so this cannot compound over
+   * successive refreshes.
+   */
+  private regroup(): void {
+    this.prsByGroup.clear();
+    const bySource = new Map<string, IndexedPr[][]>();
+
+    for (const [id, e] of this.entries) {
+      if (!e.agentName) continue;
+      const key = TicketIndex.groupKey(e.project, e.agentName);
+      const tagged = e.prs.map((pr) => ({ ...pr, sessionId: id }));
+      bySource.set(key, [...(bySource.get(key) ?? []), tagged]);
+    }
+
+    for (const [key, lists] of bySource) {
+      // mergePrs dedupes by url and keeps the earliest sighting, so a PR seen by
+      // both sessions is reported once, at the time it was actually opened.
+      const merged = mergePrs(...lists) as IndexedPr[];
+      this.prsByGroup.set(key, merged);
     }
   }
 
@@ -249,8 +302,19 @@ class TicketIndex {
     return this.entries.get(id)?.agentName ?? null;
   }
 
-  prsFor(id: string): PrRef[] {
-    return this.entries.get(id)?.prs ?? [];
+  /**
+   * Every PR attributable to this session, its same-named siblings included.
+   * `sessionId` says which transcript recorded each one, so a caller can tell
+   * an inherited PR from one this session recorded itself.
+   */
+  prsFor(id: string): IndexedPr[] {
+    const e = this.entries.get(id);
+    if (!e) return [];
+    if (e.agentName) {
+      const group = this.prsByGroup.get(TicketIndex.groupKey(e.project, e.agentName));
+      if (group) return group;
+    }
+    return e.prs.map((pr) => ({ ...pr, sessionId: id }));
   }
 }
 
