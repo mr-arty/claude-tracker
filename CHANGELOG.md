@@ -11,6 +11,28 @@ moves them into a numbered section and tags the commit.
 ## [Unreleased]
 
 ### Fixed
+- Tracked sessions that had opened a PR could show none. Two causes, both in the
+  data rather than the parser.
+  - A PR opened through the **GitHub MCP server** writes no `pr-link` record
+    anywhere, so it was invisible. `mcpPrsFromText` now pairs a
+    `create_pull_request` tool_use with its own tool_result and reads the PR url
+    from it. Pairing the tool call rather than scanning the transcript for urls
+    is the point: a session that reviewed a PR and one that opened it look the
+    same in prose. Over the local corpus this added one PR, to the one session
+    that was missing one.
+  - Claude Code does not always write the `pr-link` into the transcript that ran
+    the command. Two concurrent sessions under one name, seconds apart: one ran
+    all three `gh pr create` calls, the other received every record. PRs are now
+    unioned across sessions sharing an `agentName` **within one project**, since
+    a reusable name must not pool unrelated work.
+
+### Added
+- `PrRef.source` (`"pr-link" | "mcp"`) says which rule found a PR, and
+  `GET /api/prs/:id` returns a `sessionId` per PR. The PR page marks one
+  recorded by a same-named sibling as `via <id>` rather than passing it off as
+  this session's own.
+
+### Fixed
 - Tracking a session from a search result dropped its title and ticket. The
   Track button sent an empty patch, so the row was created with `name: ""` and
   no tickets — losing exactly the two values you had just been looking at. It

@@ -164,6 +164,8 @@ const PROSE_CAP = 1024 * 1024;
 
 export interface PrRef {
   number: number;
+  /** Which rule found it. A PR opened through the GitHub MCP server records no pr-link. */
+  source: "pr-link" | "mcp";
   /** "OWNER/REPO", exactly as the transcript records it. */
   repository: string;
   url: string;
@@ -273,12 +275,112 @@ export function prsFromText(text: string): PrRef[] {
     const firstSeen = typeof rec.timestamp === "string" ? rec.timestamp : "";
     const seen = byUrl.get(url);
     if (!seen) {
-      byUrl.set(url, { number, repository, url, firstSeen });
+      byUrl.set(url, { number, repository, url, firstSeen, source: "pr-link" });
     } else if (firstSeen && (!seen.firstSeen || firstSeen < seen.firstSeen)) {
       seen.firstSeen = firstSeen;
     }
   }
 
+  return [...byUrl.values()].sort((a, b) => b.firstSeen.localeCompare(a.firstSeen));
+}
+
+/** OWNER/REPO/pull/N, as it appears in a GitHub url. */
+const PR_URL = /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/;
+
+/**
+ * Pull requests opened through the GitHub MCP server, which writes no pr-link.
+ *
+ * Claude Code emits a pr-link record when a PR is created by shelling out to
+ * `gh pr create`. Create the same PR with the MCP server's create_pull_request
+ * tool and no record is written anywhere, so the PR is invisible to a reader
+ * that trusts pr-link alone.
+ *
+ * This pairs the tool_use with its own tool_result rather than scanning the
+ * transcript for PR urls. Scanning text would also claim every PR the session
+ * merely read, reviewed or was asked about — the session that opened one and
+ * the session that commented on it look identical in prose. The tool call does
+ * not: it is the act of opening.
+ */
+export function mcpPrsFromText(text: string): PrRef[] {
+  const opened = new Set<string>();
+  const byUrl = new Map<string, PrRef>();
+
+  for (const line of text.split("\n")) {
+    // Both guards are cheap rejects. These records are a handful of lines in a
+    // file that is mostly tool output, and parsing every line would dominate.
+    if (line.includes("create_pull_request")) {
+      let rec: Record<string, unknown>;
+      try {
+        rec = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (rec.type !== "assistant") continue;
+      const content = (rec.message as { content?: unknown })?.content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (
+          typeof part === "object" && part !== null &&
+          (part as { type?: unknown }).type === "tool_use" &&
+          String((part as { name?: unknown }).name ?? "").endsWith("create_pull_request")
+        ) {
+          const id = (part as { id?: unknown }).id;
+          if (typeof id === "string") opened.add(id);
+        }
+      }
+      continue;
+    }
+
+    if (!opened.size || !line.includes("html_url")) continue;
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (rec.type !== "user") continue;
+    const content = (rec.message as { content?: unknown })?.content;
+    if (!Array.isArray(content)) continue;
+
+    for (const part of content) {
+      if (typeof part !== "object" || part === null) continue;
+      const p = part as { type?: unknown; tool_use_id?: unknown; content?: unknown };
+      if (p.type !== "tool_result" || typeof p.tool_use_id !== "string") continue;
+      if (!opened.has(p.tool_use_id)) continue;
+
+      const body = typeof p.content === "string" ? p.content : JSON.stringify(p.content ?? "");
+      const m = PR_URL.exec(body);
+      if (!m) continue;
+
+      const url = m[0]!;
+      const firstSeen = typeof rec.timestamp === "string" ? rec.timestamp : "";
+      const seen = byUrl.get(url);
+      if (!seen) {
+        byUrl.set(url, { number: Number(m[2]), repository: m[1]!, url, firstSeen, source: "mcp" });
+      } else if (firstSeen && (!seen.firstSeen || firstSeen < seen.firstSeen)) {
+        seen.firstSeen = firstSeen;
+      }
+    }
+  }
+
+  return [...byUrl.values()];
+}
+
+/**
+ * One list from both rules. A pr-link wins a tie: it is Claude Code's own
+ * record of the event, where the MCP pairing is this tool's reconstruction.
+ */
+export function mergePrs(...lists: PrRef[][]): PrRef[] {
+  const byUrl = new Map<string, PrRef>();
+  for (const pr of lists.flat()) {
+    const seen = byUrl.get(pr.url);
+    if (!seen) {
+      byUrl.set(pr.url, { ...pr });
+      continue;
+    }
+    if (pr.firstSeen && (!seen.firstSeen || pr.firstSeen < seen.firstSeen)) seen.firstSeen = pr.firstSeen;
+    if (pr.source === "pr-link") seen.source = "pr-link";
+  }
   return [...byUrl.values()].sort((a, b) => b.firstSeen.localeCompare(a.firstSeen));
 }
 
@@ -307,7 +409,7 @@ export async function scanFull(path: string): Promise<FullScan> {
     mentions: new Set(text.match(TICKET_ALL) ?? []),
     prose: proseFromText(text),
     agentName: agentNameFromText(text),
-    prs: prsFromText(text),
+    prs: mergePrs(prsFromText(text), mcpPrsFromText(text)),
   };
 }
 

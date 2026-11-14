@@ -134,6 +134,8 @@ describe("GET /api/prs/:id", () => {
         repository: "owner/example-service",
         url: "https://github.com/owner/example-service/pull/34",
         firstSeen: "2026-09-02T10:00:00.000Z",
+        source: "pr-link",
+        sessionId: A,
       },
       {
         number: 12,
@@ -141,6 +143,8 @@ describe("GET /api/prs/:id", () => {
         // The record repeats every turn; the first sighting is when it opened.
         url: "https://github.com/owner/example-service/pull/12",
         firstSeen: "2026-09-01T10:00:00.000Z",
+        source: "pr-link",
+        sessionId: A,
       },
     ]);
   });
@@ -164,6 +168,141 @@ describe("GET /api/prs/:id", () => {
     const res = await handler()(GET(`/api/prs/${GONE}`));
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({ error: "session not on disk", id: GONE });
+  });
+});
+
+/**
+ * Claude Code does not always write the pr-link into the transcript that ran
+ * the command: two concurrent sessions under one name, and the records can land
+ * on the sibling. Tracking the session you worked in then showed no PRs.
+ */
+describe("PRs are unioned across sessions sharing a name", () => {
+  const SIB = "dddddddd-4444-4444-8444-444444444444";
+  const OTHER = "eeeeeeee-5555-4555-8555-555555555555";
+
+  async function withSibling(opts: { name: string; project: string; prs: unknown[] }) {
+    const dir = join(root, opts.project);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, `${SIB}.jsonl`),
+      jsonl(
+        { type: "user", cwd: `/home/dev/work/${opts.project.replace(/^-home-dev-work-/, "")}`, message: { content: "sibling session" } },
+        { type: "agent-name", agentName: opts.name },
+        ...opts.prs,
+      ),
+    );
+  }
+
+  test("a session with no pr-link of its own inherits its twin's", async () => {
+    // A is named example-worker and holds PRs 12 and 34; the sibling shares the
+    // name and the project but recorded nothing.
+    await withSibling({ name: "example-worker", project: "-home-dev-work-example-service", prs: [] });
+    const body = await (await handler()(GET(`/api/prs/${SIB}`))).json();
+    expect(body.prs.map((p: { number: number }) => p.number).sort()).toEqual([12, 34]);
+  });
+
+  test("an inherited PR says which session actually recorded it", async () => {
+    await withSibling({ name: "example-worker", project: "-home-dev-work-example-service", prs: [] });
+    const body = await (await handler()(GET(`/api/prs/${SIB}`))).json();
+    for (const pr of body.prs) expect(pr.sessionId).toBe(A);
+  });
+
+  test("the union is symmetric: the original sees the sibling's PRs too", async () => {
+    await withSibling({
+      name: "example-worker",
+      project: "-home-dev-work-example-service",
+      prs: [prLink(77, "2026-09-03T10:00:00.000Z")],
+    });
+    const body = await (await handler()(GET(`/api/prs/${A}`))).json();
+    expect(body.prs.map((p: { number: number }) => p.number).sort()).toEqual([12, 34, 77]);
+    expect(body.prs.find((p: { number: number }) => p.number === 77).sessionId).toBe(SIB);
+  });
+
+  test("a PR both sessions recorded is reported once, at its earliest sighting", async () => {
+    await withSibling({
+      name: "example-worker",
+      project: "-home-dev-work-example-service",
+      prs: [prLink(12, "2026-08-30T10:00:00.000Z")],
+    });
+    const body = await (await handler()(GET(`/api/prs/${A}`))).json();
+    const twelve = body.prs.filter((p: { number: number }) => p.number === 12);
+    expect(twelve).toHaveLength(1);
+    expect(twelve[0].firstSeen).toBe("2026-08-30T10:00:00.000Z");
+  });
+
+  test("the same name in a DIFFERENT project does not pool", async () => {
+    // "fix-ci" is reusable. Unioning across unrelated work would invent PRs.
+    await withSibling({ name: "example-worker", project: "-home-dev-work-other-service", prs: [] });
+    const body = await (await handler()(GET(`/api/prs/${SIB}`))).json();
+    expect(body.prs).toEqual([]);
+  });
+
+  test("an unnamed session is never pooled with anything", async () => {
+    const dir = join(root, "-home-dev-work-example-service");
+    await writeFile(
+      join(dir, `${OTHER}.jsonl`),
+      jsonl({ type: "user", cwd: "/home/dev/work/example-service", message: { content: "no name here" } }),
+    );
+    const body = await (await handler()(GET(`/api/prs/${OTHER}`))).json();
+    expect(body.prs).toEqual([]);
+  });
+
+  test("prCount on a row reflects the union, so the button is not disabled wrongly", async () => {
+    await withSibling({
+      name: "example-worker",
+      project: "-home-dev-work-example-service",
+      prs: [prLink(77, "2026-09-03T10:00:00.000Z")],
+    });
+    const h = handler();
+    await h(PUT(`/api/rows/${SIB}`, {}));
+    const { rows } = await (await h(GET("/api/rows"))).json();
+    expect(rows.find((r: { id: string }) => r.id === SIB).prCount).toBe(3);
+  });
+
+  test("repeated refreshes do not compound the union", async () => {
+    // regroup() rebuilds from Entry.prs, which stays exactly what the transcript
+    // said. Accumulating into it instead would grow the list on every request.
+    await withSibling({
+      name: "example-worker",
+      project: "-home-dev-work-example-service",
+      prs: [prLink(77, "2026-09-03T10:00:00.000Z")],
+    });
+    const h = handler();
+    for (let i = 0; i < 3; i++) await h(GET("/api/rows"));
+    const body = await (await h(GET(`/api/prs/${A}`))).json();
+    expect(body.prs).toHaveLength(3);
+  });
+});
+
+describe("PRs opened through the GitHub MCP server", () => {
+  const MCP = "ffffffff-6666-4666-8666-666666666666";
+
+  test("a PR created by the MCP tool is found, though it writes no pr-link", async () => {
+    const dir = join(root, "-home-dev-work-example-service");
+    await writeFile(
+      join(dir, `${MCP}.jsonl`),
+      jsonl(
+        { type: "user", cwd: "/home/dev/work/example-service", message: { content: "open a pull request" } },
+        {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "t1", name: "mcp__github__create_pull_request", input: {} }] },
+        },
+        {
+          type: "user",
+          timestamp: "2026-09-04T10:00:00.000Z",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "t1",
+              content: JSON.stringify({ html_url: "https://github.com/owner/example-service/pull/555" }),
+            }],
+          },
+        },
+      ),
+    );
+    const body = await (await handler()(GET(`/api/prs/${MCP}`))).json();
+    expect(body.prs).toHaveLength(1);
+    expect(body.prs[0]).toMatchObject({ number: 555, source: "mcp", sessionId: MCP });
   });
 });
 
