@@ -10,6 +10,8 @@ moves them into a numbered section and tags the commit.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-14
+
 ### Fixed
 - Tracked sessions that had opened a PR could show none. Two causes, both in the
   data rather than the parser.
